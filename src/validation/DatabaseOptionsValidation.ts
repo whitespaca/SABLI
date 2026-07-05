@@ -1,7 +1,12 @@
-import { t } from "typesea";
+import { t, compile } from "typesea";
 import { SabliValidationError } from "../errors/index.js";
 
-const DatabaseOptionsInputGuard = t.record(t.unknown);
+export const DatabaseOptionsGuard = compile(t.object({
+  path: t.string.min(1),
+  createIfMissing: t.boolean.optional(),
+  memSegmentMaxDocuments: t.number.int().gte(1).optional(),
+  durability: t.union(t.literal("strict"), t.literal("relaxed")).optional()
+}));
 
 /**
  * Options used to open a SABLI database.
@@ -25,25 +30,34 @@ export interface SabliDatabaseOptions {
  * @throws {SabliValidationError} If options are invalid.
  */
 export function parseDatabaseOptions(input: unknown): SabliDatabaseOptions {
-  const result = DatabaseOptionsInputGuard.check(input);
-  if (!result.ok || typeof input !== "object" || input === null || Array.isArray(input)) {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new SabliValidationError("Invalid database options: expected an object.");
   }
-  const record = input as Readonly<Record<string, unknown>>;
-  if (typeof record.path !== "string" || record.path.trim().length === 0) {
-    throw new SabliValidationError("Invalid database options: path must be a non-empty string.");
+  const result = DatabaseOptionsGuard.check(input);
+  if (!result.ok) {
+    const issue = result.error[0];
+    if (issue !== undefined && issue.path.length > 0) {
+      const field = issue.path[0];
+      if (field === "path") {
+        throw new SabliValidationError("Invalid database options: path must be a non-empty string.");
+      }
+      if (field === "createIfMissing") {
+        throw new SabliValidationError("Invalid database options: createIfMissing must be a boolean.");
+      }
+      if (field === "memSegmentMaxDocuments") {
+        throw new SabliValidationError("Invalid database options: memSegmentMaxDocuments must be a positive integer.");
+      }
+      if (field === "durability") {
+        throw new SabliValidationError("Invalid database options: durability must be strict or relaxed.");
+      }
+    }
+    throw new SabliValidationError("Invalid database options.");
   }
-  const createIfMissing = record.createIfMissing === undefined ? false : record.createIfMissing;
-  if (typeof createIfMissing !== "boolean") {
-    throw new SabliValidationError("Invalid database options: createIfMissing must be a boolean.");
-  }
-  const memSegmentMaxDocuments = record.memSegmentMaxDocuments === undefined ? 1_000 : record.memSegmentMaxDocuments;
-  if (typeof memSegmentMaxDocuments !== "number" || !Number.isInteger(memSegmentMaxDocuments) || memSegmentMaxDocuments < 1) {
-    throw new SabliValidationError("Invalid database options: memSegmentMaxDocuments must be a positive integer.");
-  }
-  const durability = record.durability === undefined ? "strict" : record.durability;
-  if (durability !== "strict" && durability !== "relaxed") {
-    throw new SabliValidationError("Invalid database options: durability must be strict or relaxed.");
-  }
-  return { path: record.path, createIfMissing, memSegmentMaxDocuments, durability };
+  const record = result.value;
+  return {
+    path: record.path,
+    createIfMissing: record.createIfMissing ?? false,
+    memSegmentMaxDocuments: record.memSegmentMaxDocuments ?? 1000,
+    durability: record.durability ?? "strict"
+  };
 }

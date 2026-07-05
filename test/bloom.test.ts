@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BloomFilter } from "../src/index.js";
+import { BloomFilter, SabliCorruptionError } from "../src/index.js";
 
 describe("BloomFilter", () => {
   it("has no false negatives for inserted keys", () => {
@@ -18,5 +18,15 @@ describe("BloomFilter", () => {
     filter.add("hello");
     const restored = BloomFilter.deserialize(filter.serialize());
     expect(restored.mightContain("hello")).toBe(true);
+  });
+
+  it("rejects malformed serialized filters", () => {
+    expect(() => BloomFilter.deserialize({
+      format: "sabli-bloom",
+      version: 1,
+      bitSize: 0,
+      hashCount: 1,
+      data: ""
+    })).toThrow(SabliCorruptionError);
   });
 });

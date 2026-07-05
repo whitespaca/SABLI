@@ -14,6 +14,7 @@ import { toDocId, toSegmentId } from "../types/json.js";
 import { parseJsonDocument } from "../validation/documents.js";
 import { parseDatabaseOptions, type SabliDatabaseOptions } from "../validation/DatabaseOptionsValidation.js";
 import { parseQuery } from "../validation/queries.js";
+import { DocIdInputGuard } from "../validation/schemas.js";
 import type { DatabaseLifecycleState } from "./DatabaseLifecycle.js";
 import { isDatabaseOpen } from "./DatabaseLifecycle.js";
 
@@ -392,8 +393,9 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
 }
 
 function parseDocIdInput(input: unknown, operation: string): DocId {
-  if (typeof input !== "number" || !Number.isInteger(input) || input < 1) {
+  const result = DocIdInputGuard.check(input);
+  if (!result.ok) {
     throw new SabliValidationError(`Invalid ${operation} docId: expected a positive integer.`);
   }
-  return toDocId(input);
+  return toDocId(result.value);
 }

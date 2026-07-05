@@ -14,26 +14,6 @@ export const DEFAULT_SABLI_OPTIONS: SabliOptions = {
   }
 };
 
-function readPositiveInteger(value: unknown, name: string, fallback: number): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
-    throw new SabliValidationError(`Invalid options: ${name} must be a positive integer.`);
-  }
-  return value;
-}
-
-function readProbability(value: unknown, name: string, fallback: number): number {
-  if (value === undefined) {
-    return fallback;
-  }
-  if (typeof value !== "number" || value <= 0 || value >= 1) {
-    throw new SabliValidationError(`Invalid options: ${name} must be greater than 0 and less than 1.`);
-  }
-  return value;
-}
-
 /**
  * Validates and narrows unknown constructor options.
  *
@@ -46,22 +26,13 @@ export function parseSabliOptions(input: unknown): SabliOptions {
   if (!result.ok) {
     throw new SabliValidationError(formatValidationError("Invalid options.", result.error));
   }
-  const object = (input ?? {}) as Readonly<Record<string, unknown>>;
-  const bloom = (typeof object.bloom === "object" && object.bloom !== null && !Array.isArray(object.bloom)
-    ? object.bloom
-    : {}) as Readonly<Record<string, unknown>>;
-  if (object.bloom !== undefined && (typeof object.bloom !== "object" || object.bloom === null || Array.isArray(object.bloom))) {
-    throw new SabliValidationError("Invalid options: bloom must be an object when provided.");
-  }
+  const options = result.value ?? {};
+  const bloom = options.bloom ?? {};
   return {
-    mutableSegmentMaxDocuments: readPositiveInteger(
-      object.mutableSegmentMaxDocuments,
-      "mutableSegmentMaxDocuments",
-      DEFAULT_SABLI_OPTIONS.mutableSegmentMaxDocuments
-    ),
+    mutableSegmentMaxDocuments: options.mutableSegmentMaxDocuments ?? DEFAULT_SABLI_OPTIONS.mutableSegmentMaxDocuments,
     bloom: {
-      falsePositiveRate: readProbability(bloom.falsePositiveRate, "bloom.falsePositiveRate", DEFAULT_SABLI_OPTIONS.bloom.falsePositiveRate),
-      expectedEntries: readPositiveInteger(bloom.expectedEntries, "bloom.expectedEntries", DEFAULT_SABLI_OPTIONS.bloom.expectedEntries)
+      falsePositiveRate: bloom.falsePositiveRate ?? DEFAULT_SABLI_OPTIONS.bloom.falsePositiveRate,
+      expectedEntries: bloom.expectedEntries ?? DEFAULT_SABLI_OPTIONS.bloom.expectedEntries
     }
   };
 }

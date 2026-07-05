@@ -5,9 +5,7 @@ import { toDocId, toSegmentId, type DocId } from "../types/json.js";
 import { writeFileAtomic } from "./AtomicFile.js";
 import { checksum, stableJson } from "./Checksum.js";
 import { SabliCorruptionError } from "../errors/index.js";
-import { t } from "typesea";
-
-const ManifestInputGuard = t.record(t.unknown);
+import { DatabaseManifestInputGuard } from "../validation/schemas.js";
 
 /**
  * Segment entry recorded in the database manifest.
@@ -126,49 +124,17 @@ export class ManifestStore {
  * @throws {SabliCorruptionError} If the manifest is malformed.
  */
 export function parseDatabaseManifest(input: unknown): DatabaseManifest {
-  const result = ManifestInputGuard.check(input);
-  if (!result.ok || typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw new SabliCorruptionError("Invalid manifest: expected an object.");
+  const result = DatabaseManifestInputGuard.check(input);
+  if (!result.ok) {
+    throw new SabliCorruptionError("Invalid manifest: expected a versioned manifest object.");
   }
-  const record = input as Readonly<Record<string, unknown>>;
-  if (record.format !== "sabli-manifest" || record.version !== 1) {
-    throw new SabliCorruptionError("Invalid manifest: unsupported format or version.");
-  }
-  if (typeof record.nextDocId !== "number" || !Number.isInteger(record.nextDocId) || record.nextDocId < 1) {
-    throw new SabliCorruptionError("Invalid manifest: nextDocId must be a positive integer.");
-  }
-  if (typeof record.nextSegmentId !== "number" || !Number.isInteger(record.nextSegmentId) || record.nextSegmentId < 1) {
-    throw new SabliCorruptionError("Invalid manifest: nextSegmentId must be a positive integer.");
-  }
-  if (typeof record.flushedWalSequence !== "number" || !Number.isInteger(record.flushedWalSequence) || record.flushedWalSequence < 0) {
-    throw new SabliCorruptionError("Invalid manifest: flushedWalSequence must be a non-negative integer.");
-  }
+  const record = result.value;
   const activeWalGeneration = record.activeWalGeneration ?? 1;
-  if (typeof activeWalGeneration !== "number" || !Number.isInteger(activeWalGeneration) || activeWalGeneration < 1) {
-    throw new SabliCorruptionError("Invalid manifest: activeWalGeneration must be a positive integer.");
-  }
-  if (!Array.isArray(record.segments)) {
-    throw new SabliCorruptionError("Invalid manifest: segments must be an array.");
-  }
-  const segments = record.segments.map((segment): ManifestSegmentEntry => {
-    if (typeof segment !== "object" || segment === null || Array.isArray(segment)) {
-      throw new SabliCorruptionError("Invalid manifest: segment entries must be objects.");
-    }
-    const entry = segment as Readonly<Record<string, unknown>>;
-    if (typeof entry.segmentId !== "number" || !Number.isInteger(entry.segmentId) || entry.segmentId < 1) {
-      throw new SabliCorruptionError("Invalid manifest: segmentId must be a positive integer.");
-    }
-    if (typeof entry.path !== "string" || entry.path.length === 0) {
-      throw new SabliCorruptionError("Invalid manifest: segment path must be a non-empty string.");
-    }
-    if (typeof entry.docCount !== "number" || !Number.isInteger(entry.docCount) || entry.docCount < 0) {
-      throw new SabliCorruptionError("Invalid manifest: segment docCount must be a non-negative integer.");
-    }
-    return { segmentId: toSegmentId(entry.segmentId), path: entry.path, docCount: entry.docCount };
-  });
-  if (typeof record.checksum !== "string") {
-    throw new SabliCorruptionError("Invalid manifest: checksum must be a string.");
-  }
+  const segments = record.segments.map((segment): ManifestSegmentEntry => ({
+    segmentId: toSegmentId(segment.segmentId),
+    path: segment.path,
+    docCount: segment.docCount
+  }));
   const payload = {
     format: record.format,
     version: record.version,

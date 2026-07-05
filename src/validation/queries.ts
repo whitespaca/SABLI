@@ -2,17 +2,17 @@ import { normalizeJsonPath } from "../core/path.js";
 import { SabliValidationError } from "../errors/index.js";
 import type { Query, QueryExpression, QueryPredicate, QueryValue } from "../query/ast.js";
 import { formatValidationError } from "./errors.js";
-import { QueryInputGuard } from "./schemas.js";
+import { QueryInputGuard, type QueryExpressionInput, type QueryPredicateOperatorsInput } from "./schemas.js";
 
 function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function isQueryValue(value: unknown): value is QueryValue {
-  return value === null || typeof value === "boolean" || typeof value === "number" || typeof value === "string";
+function hasOwnKey(value: Readonly<Record<string, unknown>>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function parsePredicate(path: string, input: Readonly<Record<string, unknown>>): QueryPredicate {
+function parsePredicate(path: string, input: QueryPredicateOperatorsInput): QueryPredicate {
   const normalizedPath = normalizeJsonPath(path);
   const predicate: {
     path: string;
@@ -27,11 +27,12 @@ function parsePredicate(path: string, input: Readonly<Record<string, unknown>>):
     between?: readonly [number, number];
   } = { path: normalizedPath };
   let operatorCount = 0;
+  const record = input as Readonly<Record<string, unknown>>;
 
   const assignValue = (key: "eq" | "neq" | "contains"): void => {
-    if (key in input) {
+    if (hasOwnKey(record, key)) {
       const value = input[key];
-      if (!isQueryValue(value)) {
+      if (value === undefined) {
         throw new SabliValidationError(`Invalid query: ${key} requires a primitive JSON value.`);
       }
       predicate[key] = value;
@@ -42,29 +43,29 @@ function parsePredicate(path: string, input: Readonly<Record<string, unknown>>):
   assignValue("neq");
   assignValue("contains");
 
-  if ("exists" in input) {
-    if (typeof input.exists !== "boolean") {
+  if (hasOwnKey(record, "exists")) {
+    if (input.exists === undefined) {
       throw new SabliValidationError("Invalid query: exists requires a boolean value.");
     }
     predicate.exists = input.exists;
     operatorCount += 1;
   }
   for (const key of ["gt", "gte", "lt", "lte"] as const) {
-    if (key in input) {
+    if (hasOwnKey(record, key)) {
       const value = input[key];
-      if (typeof value !== "number" || !Number.isFinite(value)) {
+      if (value === undefined) {
         throw new SabliValidationError(`Invalid query: ${key} requires a finite number.`);
       }
       predicate[key] = value;
       operatorCount += 1;
     }
   }
-  if ("between" in input) {
+  if (hasOwnKey(record, "between")) {
     const value = input.between;
-    if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== "number" || typeof value[1] !== "number" || value[0] > value[1]) {
+    if (value === undefined || value[0] > value[1]) {
       throw new SabliValidationError("Invalid query: between requires an ordered numeric tuple.");
     }
-    predicate.between = [value[0], value[1]];
+    predicate.between = value;
     operatorCount += 1;
   }
   if (operatorCount === 0) {
@@ -73,41 +74,45 @@ function parsePredicate(path: string, input: Readonly<Record<string, unknown>>):
   return predicate;
 }
 
-function parseExpression(input: unknown): QueryExpression {
+function parseExpression(input: QueryExpressionInput): QueryExpression {
   if (!isRecord(input)) {
     throw new SabliValidationError("Invalid query: where must be an object.");
   }
-  if ("and" in input) {
-    if (!Array.isArray(input.and) || input.and.length === 0) {
+  const record = input as Readonly<Record<string, unknown>>;
+  if (hasOwnKey(record, "and")) {
+    const and = record.and;
+    if (!Array.isArray(and) || and.length === 0) {
       throw new SabliValidationError("Invalid query: and requires a non-empty array.");
     }
-    return { and: input.and.map(parseExpression) };
+    return { and: and.map((expression: unknown) => parseExpression(expression as QueryExpressionInput)) };
   }
-  if ("or" in input) {
-    if (!Array.isArray(input.or) || input.or.length === 0) {
+  if (hasOwnKey(record, "or")) {
+    const or = record.or;
+    if (!Array.isArray(or) || or.length === 0) {
       throw new SabliValidationError("Invalid query: or requires a non-empty array.");
     }
-    return { or: input.or.map(parseExpression) };
+    return { or: or.map((expression: unknown) => parseExpression(expression as QueryExpressionInput)) };
   }
-  if ("not" in input) {
-    return { not: parseExpression(input.not) };
+  if (hasOwnKey(record, "not")) {
+    return { not: parseExpression(record.not as QueryExpressionInput) };
   }
-  if ("elemMatch" in input) {
-    if (!isRecord(input.elemMatch) || typeof input.elemMatch.path !== "string") {
+  if (hasOwnKey(record, "elemMatch")) {
+    const elemMatch = record.elemMatch;
+    if (!isRecord(elemMatch) || typeof elemMatch.path !== "string") {
       throw new SabliValidationError("Invalid query: elemMatch requires a path and where expression.");
     }
     return {
       elemMatch: {
-        path: normalizeJsonPath(input.elemMatch.path),
-        where: parseExpression(input.elemMatch.where)
+        path: normalizeJsonPath(elemMatch.path),
+        where: parseExpression(elemMatch.where as QueryExpressionInput)
       }
     };
   }
-  if ("path" in input) {
-    if (typeof input.path !== "string") {
+  if (hasOwnKey(record, "path")) {
+    if (typeof record.path !== "string") {
       throw new SabliValidationError("Invalid query: predicate path must be a string.");
     }
-    return parsePredicate(input.path, input);
+    return parsePredicate(record.path, input as QueryPredicateOperatorsInput);
   }
 
   const expressions = Object.entries(input).map(([path, condition]) => {
@@ -134,9 +139,9 @@ export function parseQuery(input: unknown): Query {
   if (!result.ok) {
     throw new SabliValidationError(formatValidationError("Invalid query.", result.error));
   }
-  const object = input as Readonly<Record<string, unknown>>;
-  if (!("where" in object)) {
-    return { where: parseExpression(object) };
+  const object = result.value as Readonly<Record<string, unknown>>;
+  if (!hasOwnKey(object, "where")) {
+    return { where: parseExpression(result.value as QueryExpressionInput) };
   }
-  return { where: parseExpression(object.where) };
+  return { where: parseExpression(object.where as QueryExpressionInput) };
 }

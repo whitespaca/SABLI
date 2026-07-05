@@ -3,10 +3,10 @@ import { SabliRecoveryError, SabliStorageError } from "../errors/index.js";
 import type { JsonObject } from "../types/json.js";
 import { toDocId, type DocId } from "../types/json.js";
 import { checksum, stableJson } from "./Checksum.js";
-import { t } from "typesea";
-import { JsonObjectGuard } from "../validation/schemas.js";
-
-const WalRecordInputGuard = t.record(t.unknown);
+import {
+  WalEnvelopeInputGuard,
+  WalRecordInputGuard
+} from "../validation/schemas.js";
 
 /**
  * Insert WAL payload.
@@ -172,17 +172,14 @@ export class WalStore {
     } catch {
       return undefined;
     }
-    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    const envelope = WalEnvelopeInputGuard.check(value);
+    if (!envelope.ok) {
       return undefined;
     }
-    const envelope = value as Readonly<Record<string, unknown>>;
-    if (typeof envelope.checksum !== "string" || typeof envelope.record !== "object" || envelope.record === null || Array.isArray(envelope.record)) {
-      return undefined;
-    }
-    if (checksum(stableJson(envelope.record)) !== envelope.checksum) {
+    if (checksum(stableJson(envelope.value.record)) !== envelope.value.checksum) {
       throw new SabliRecoveryError("Invalid WAL record: checksum mismatch.");
     }
-    return parseWalRecord(envelope.record);
+    return parseWalRecord(envelope.value.record);
   }
 }
 
@@ -195,35 +192,19 @@ export class WalStore {
  */
 export function parseWalRecord(input: unknown): WalRecord {
   const result = WalRecordInputGuard.check(input);
-  if (!result.ok || typeof input !== "object" || input === null || Array.isArray(input)) {
-    throw new SabliRecoveryError("Invalid WAL record: expected an object.");
+  if (!result.ok) {
+    throw new SabliRecoveryError("Invalid WAL record: expected a versioned WAL record object.");
   }
-  const record = input as Readonly<Record<string, unknown>>;
-  if (record.format !== "sabli-wal-record" || record.version !== 1) {
-    throw new SabliRecoveryError("Invalid WAL record: unsupported format or version.");
-  }
-  if (typeof record.sequence !== "number" || !Number.isInteger(record.sequence) || record.sequence < 1) {
-    throw new SabliRecoveryError("Invalid WAL record: sequence must be a positive integer.");
-  }
-  if (typeof record.docId !== "number" || !Number.isInteger(record.docId) || record.docId < 1) {
-    throw new SabliRecoveryError("Invalid WAL record: docId must be a positive integer.");
-  }
+  const record = result.value;
   if (record.type === "delete") {
     return { format: "sabli-wal-record", version: 1, sequence: record.sequence, type: "delete", docId: toDocId(record.docId) };
   }
-  if (record.type === "insert" || record.type === "update") {
-    const documentResult = JsonObjectGuard.check(record.document);
-    if (!documentResult.ok) {
-      throw new SabliRecoveryError("Invalid WAL record: document must be an object.");
-    }
-    return {
-      format: "sabli-wal-record",
-      version: 1,
-      sequence: record.sequence,
-      type: record.type,
-      docId: toDocId(record.docId),
-      document: documentResult.value
-    };
-  }
-  throw new SabliRecoveryError("Invalid WAL record: unsupported operation type.");
+  return {
+    format: "sabli-wal-record",
+    version: 1,
+    sequence: record.sequence,
+    type: record.type,
+    docId: toDocId(record.docId),
+    document: record.document
+  };
 }

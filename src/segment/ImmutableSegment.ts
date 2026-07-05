@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { BloomFilter } from "../bloom/bloom-filter.js";
 import { DocumentBlockReader } from "../storage/DocumentBlockStore.js";
 import { writeFileAtomic } from "../storage/AtomicFile.js";
-import type { OffsetTableFile } from "../storage/OffsetTable.js";
 import type { DocId, JsonObject } from "../types/json.js";
 import { toDocId } from "../types/json.js";
 import { parseSegmentMetadata } from "../validation/SegmentMetadataValidation.js";
@@ -11,23 +10,20 @@ import { SortedArrayPostingList, type PostingList } from "../indexes/posting.js"
 import type { QueryExpression, QueryPredicate } from "../query/ast.js";
 import { encodeTermKey } from "./MemSegment.js";
 import type { SegmentMetadata } from "./SegmentMetadata.js";
+import { SabliCorruptionError } from "../errors/index.js";
+import {
+  DeleteBitmapFileGuard,
+  OffsetTableFileGuard,
+  PostingIndexFileGuard,
+  type PostingIndexFileInput
+} from "../validation/schemas.js";
 
-interface PostingIndexFile {
-  readonly format: "sabli-postings";
-  readonly version: 1;
-  readonly pathExists: readonly (readonly [string, readonly number[]])[];
-  readonly termPostings: readonly (readonly [string, readonly number[]])[];
-  readonly numericValues: readonly (readonly [string, readonly { readonly docId: number; readonly value: number }[]])[];
-}
+type PostingIndexFile = PostingIndexFileInput;
 
 interface DeleteBitmapFile {
   readonly format: "sabli-delete-bitmap";
   readonly version: 1;
   readonly deleted: readonly number[];
-}
-
-function isNumberArray(value: unknown): value is readonly number[] {
-  return Array.isArray(value) && value.every((item) => typeof item === "number");
 }
 
 /**
@@ -131,7 +127,12 @@ export class ImmutableSegment {
 
   private async documentReader(): Promise<DocumentBlockReader> {
     if (this.#documents === undefined) {
-      const table = JSON.parse(await readFile(join(this.#root, "docs.offset"), "utf8")) as OffsetTableFile;
+      const parsed: unknown = JSON.parse(await readFile(join(this.#root, "docs.offset"), "utf8"));
+      const result = OffsetTableFileGuard.check(parsed);
+      if (!result.ok) {
+        throw new SabliCorruptionError("Invalid document offset table: malformed metadata.");
+      }
+      const table = result.value;
       this.#documents = new DocumentBlockReader(join(this.#root, "docs.bin"), table);
     }
     return this.#documents;
@@ -149,14 +150,11 @@ export class ImmutableSegment {
   private async loadDeleteBitmap(): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(await readFile(join(this.#root, "delete.bitmap"), "utf8"));
-      if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      const result = DeleteBitmapFileGuard.check(parsed);
+      if (!result.ok) {
         return;
       }
-      const record = parsed as Readonly<Record<string, unknown>>;
-      if (record.format !== "sabli-delete-bitmap" || record.version !== 1 || !isNumberArray(record.deleted)) {
-        return;
-      }
-      for (const docId of record.deleted) {
+      for (const docId of result.value.deleted) {
         if (Number.isInteger(docId) && docId >= 1) {
           this.#deleted.add(docId);
         }
@@ -176,7 +174,14 @@ export class ImmutableSegment {
   }
 
   private async postings(): Promise<PostingIndexFile> {
-    this.#postings ??= JSON.parse(await readFile(join(this.#root, "postings.idx"), "utf8")) as PostingIndexFile;
+    if (this.#postings === undefined) {
+      const parsed: unknown = JSON.parse(await readFile(join(this.#root, "postings.idx"), "utf8"));
+      const result = PostingIndexFileGuard.check(parsed);
+      if (!result.ok) {
+        throw new SabliCorruptionError("Invalid posting index: malformed metadata.");
+      }
+      this.#postings = result.value;
+    }
     return this.#postings;
   }
 
