@@ -26,49 +26,9 @@ export const JsonValueGuard: Guard<JsonValue> = t.lazy((): Guard<JsonValue> =>
 export const JsonObjectGuard: Guard<JsonObject> = t.record(JsonValueGuard);
 
 /**
- * Raw query predicate operators accepted before path normalization.
+ * TypeSea guard for unknown public query objects before semantic normalization.
  */
-export interface QueryPredicateOperatorsInput {
-  readonly eq?: JsonPrimitive;
-  readonly neq?: JsonPrimitive;
-  readonly exists?: boolean;
-  readonly contains?: JsonPrimitive;
-  readonly gt?: number;
-  readonly gte?: number;
-  readonly lt?: number;
-  readonly lte?: number;
-  readonly between?: readonly [number, number];
-}
-
-/**
- * Raw path predicate accepted by public query input.
- */
-export interface QueryPathPredicateInput extends QueryPredicateOperatorsInput {
-  readonly path: string;
-}
-
-/**
- * Recursive public query expression input before semantic normalization.
- */
-export type QueryExpressionInput =
-  | { readonly and: readonly QueryExpressionInput[] }
-  | { readonly or: readonly QueryExpressionInput[] }
-  | { readonly not: QueryExpressionInput }
-  | {
-      readonly elemMatch: {
-        readonly path: string;
-        readonly where: QueryExpressionInput;
-      };
-    }
-  | QueryPathPredicateInput
-  | Readonly<Record<string, QueryPredicateOperatorsInput>>;
-
-/**
- * Public query input. Callers may pass either `{ where }` or a bare expression.
- */
-export type QueryInput =
-  | QueryExpressionInput
-  | { readonly where: QueryExpressionInput };
+export const QueryInputGuard = t.record(t.unknown);
 
 /**
  * Raw SABLI constructor options accepted before defaults are applied.
@@ -80,78 +40,6 @@ export interface SabliOptionsInput {
     readonly expectedEntries?: number;
   };
 }
-
-const queryPredicateOptionalShape = {
-  eq: JsonPrimitiveGuard.optional(),
-  neq: JsonPrimitiveGuard.optional(),
-  exists: t.boolean.optional(),
-  contains: JsonPrimitiveGuard.optional(),
-  gt: t.number.optional(),
-  gte: t.number.optional(),
-  lt: t.number.optional(),
-  lte: t.number.optional(),
-  between: t.tuple([t.number, t.number]).optional()
-} as const;
-
-/**
- * TypeSea guard for raw query predicate operator objects.
- */
-export const QueryPredicateOperatorsInputGuard: Guard<QueryPredicateOperatorsInput> = t.union(
-  t.object({ ...queryPredicateOptionalShape, eq: JsonPrimitiveGuard }),
-  t.object({ ...queryPredicateOptionalShape, neq: JsonPrimitiveGuard }),
-  t.object({ ...queryPredicateOptionalShape, exists: t.boolean }),
-  t.object({ ...queryPredicateOptionalShape, contains: JsonPrimitiveGuard }),
-  t.object({ ...queryPredicateOptionalShape, gt: t.number }),
-  t.object({ ...queryPredicateOptionalShape, gte: t.number }),
-  t.object({ ...queryPredicateOptionalShape, lt: t.number }),
-  t.object({ ...queryPredicateOptionalShape, lte: t.number }),
-  t.object({ ...queryPredicateOptionalShape, between: t.tuple([t.number, t.number]) })
-);
-
-/**
- * TypeSea guard for raw path predicates.
- */
-export const QueryPathPredicateInputGuard: Guard<QueryPathPredicateInput> = t.union(
-  t.object({ path: t.string, ...queryPredicateOptionalShape, eq: JsonPrimitiveGuard }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, neq: JsonPrimitiveGuard }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, exists: t.boolean }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, contains: JsonPrimitiveGuard }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, gt: t.number }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, gte: t.number }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, lt: t.number }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, lte: t.number }),
-  t.object({ path: t.string, ...queryPredicateOptionalShape, between: t.tuple([t.number, t.number]) })
-);
-
-/**
- * TypeSea guard for raw recursive query expressions.
- */
-export const QueryExpressionInputGuard: Guard<QueryExpressionInput> = t.lazy((): Guard<QueryExpressionInput> =>
-  t.union(
-    t.object({ and: t.array(QueryExpressionInputGuard).min(1) }),
-    t.object({ or: t.array(QueryExpressionInputGuard).min(1) }),
-    t.object({ not: QueryExpressionInputGuard }),
-    t.object({
-      elemMatch: t.object({
-        path: t.string,
-        where: QueryExpressionInputGuard
-      })
-    }),
-    QueryPathPredicateInputGuard,
-    t.record(QueryPredicateOperatorsInputGuard)
-  )
-);
-
-/**
- * Compiled TypeSea guard for public query objects before semantic normalization.
- */
-export const QueryInputGuard: Guard<QueryInput> = compile(
-  t.union(
-    t.object({ where: QueryExpressionInputGuard }),
-    QueryExpressionInputGuard
-  ),
-  { name: "isSabliQueryInput" }
-);
 
 /**
  * Compiled TypeSea guard for unknown public options objects before defaults are applied.
