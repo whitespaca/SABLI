@@ -1,6 +1,9 @@
 # SABLI
 
-![npm](https://img.shields.io/npm/v/@whitespaca/sabli) ![npm](https://img.shields.io/npm/dt/@whitespaca/sabli)
+[![npm version](https://img.shields.io/npm/v/@whitespaca/sabli.svg)](https://www.npmjs.com/package/@whitespaca/sabli)
+[![TypeScript](https://img.shields.io/badge/TypeScript-Ready-blue.svg)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![npm](https://img.shields.io/npm/dt/@whitespaca/sabli)
 
 SABLI is an ESModule-only TypeScript library for indexing and searching unordered schema-less JSON documents. SABLI stands for Segmented Adaptive Bloom-LSM Inverted Index.
 
