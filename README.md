@@ -17,6 +17,12 @@ npm install sablidb
 
 SABLI targets Node.js 22 or later and is published as ESModule only.
 
+## Requirements
+
+- Node.js 22 or later.
+- ESModule projects only. Use `"type": "module"` in `package.json`.
+- TypeScript users should use Node-style ESModule resolution.
+
 ## Basic Usage
 
 ```ts
@@ -41,9 +47,129 @@ const results = await db.search({
   }
 });
 
-console.log(results.documents);
+console.dir(results.documents, { depth: null });
 
 await db.close();
+```
+
+Plain `console.log(results.documents)` may show nested values as `[Object]` or `[Array]`:
+
+```txt
+[ { docId: 1, document: { user: [Object], tags: [Array] } } ]
+```
+
+That is normal Node.js console inspection behavior. Use `console.dir(value, { depth: null })` or `JSON.stringify(value, null, 2)` when you want fully expanded nested objects and arrays.
+
+Example expanded output:
+
+```txt
+[
+  {
+    docId: 1,
+    document: {
+      user: { name: 'Kim', age: 31 },
+      tags: [ 'backend', 'typescript' ]
+    }
+  }
+]
+```
+
+## Persistent Reopen
+
+```ts
+import { SabliDatabase } from "sablidb";
+
+const first = await SabliDatabase.open({
+  path: "./data/users.sabli",
+  createIfMissing: true
+});
+
+await first.insert({
+  user: { name: "Lee", age: 28 },
+  tags: ["frontend", "typescript"]
+});
+
+await first.close();
+
+const reopened = await SabliDatabase.open({
+  path: "./data/users.sabli",
+  createIfMissing: false
+});
+
+const results = await reopened.search({
+  where: {
+    "tags[]": { contains: "frontend" }
+  }
+});
+
+console.dir(results.documents, { depth: null });
+
+await reopened.close();
+```
+
+## Consumer Project Quickstart
+
+```bash
+mkdir sablidb-consumer-test
+cd sablidb-consumer-test
+npm init -y
+npm pkg set type=module
+npm install sablidb
+npm install -D typescript @types/node
+npx tsc --init
+mkdir src
+```
+
+Create `src/index.ts`:
+
+```ts
+import { SabliDatabase } from "sablidb";
+
+const db = await SabliDatabase.open({
+  path: "./data/users.sabli",
+  createIfMissing: true
+});
+
+await db.insert({
+  user: { name: "Kim", age: 31 },
+  tags: ["backend", "typescript"]
+});
+
+const results = await db.search({
+  where: {
+    "tags[]": { contains: "backend" }
+  }
+});
+
+console.dir(results.documents, { depth: null });
+
+await db.close();
+```
+
+Replace the generated `tsconfig.json` with the recommended configuration below, then compile and run:
+
+```bash
+npx tsc
+node dist/index.js
+```
+
+## Recommended TypeScript Config
+
+For Node.js 22 and ESModule projects, use options like these:
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"]
+}
 ```
 
 ## Delete And Update
@@ -109,6 +235,31 @@ All public inputs are validated at runtime with TypeSea-backed SABLI validation 
 
 Documents must be JSON-compatible plain objects. Values such as `undefined`, `Date`, `Map`, `Set`, functions, symbols, and bigint values must be serialized before insertion.
 
+## Error Handling
+
+SABLI exports domain-specific error classes. Validation failures are wrapped as `SabliValidationError`.
+
+```ts
+import { SabliDatabase, SabliValidationError } from "sablidb";
+
+const db = await SabliDatabase.open({
+  path: "./data/errors.sabli",
+  createIfMissing: true
+});
+
+try {
+  await db.insert(undefined);
+} catch (error) {
+  if (error instanceof SabliValidationError) {
+    console.error(error.message);
+  } else {
+    throw error;
+  }
+} finally {
+  await db.close();
+}
+```
+
 ## Correctness Model
 
 Indexes and Bloom filters only generate candidate documents. SABLI verifies every candidate against the raw JSON document before returning it, so final search results follow exact query semantics.
@@ -146,3 +297,11 @@ Partial trailing WAL records are handled deterministically by stopping at the la
 ## Current Limitations
 
 This release is a persistent correctness foundation. Compaction is still future work, so deleted and superseded versions may remain on disk until a later compaction milestone. Optimized posting encodings, richer delete bitmap management, and advanced scope-aware array `elemMatch` semantics are also planned future work.
+
+## Future Roadmap
+
+- Segment compaction and obsolete-version cleanup.
+- More compact posting encodings.
+- Larger-scale lazy loading and cache controls.
+- Richer scoped array matching.
+- Additional storage diagnostics and recovery tooling.

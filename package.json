@@ -10,24 +10,30 @@
       "import": "./dist/index.js"
     }
   },
+  "types": "./dist/index.d.ts",
   "publishConfig": {
     "access": "public"
   },
   "files": [
     "dist",
+    "examples",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run",
+    "examples:check": "tsc -p tsconfig.examples.json --noEmit",
+    "test": "npm run build && vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint .",
-    "check": "npm run typecheck && npm run lint && npm run test && npm run build"
+    "check": "npm run typecheck && npm run lint && npm run build && npm run examples:check && npm run test"
   },
   "keywords": [
     "json",
+    "database",
+    "embedded-database",
+    "nosql",
     "search",
     "index",
     "bloom-filter",
