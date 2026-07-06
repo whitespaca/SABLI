@@ -2,7 +2,7 @@ import { BloomFilter } from "../bloom/bloom-filter.js";
 import { extractEntries } from "../extract/extractor.js";
 import type { BloomOptions, QueryExpression, QueryPredicate } from "../query/ast.js";
 import type { DocId, JsonObject, JsonPrimitive } from "../types/json.js";
-import { SortedArrayPostingList, type PostingList } from "../indexes/posting.js";
+import { createPostingList, type PostingList } from "../indexes/posting.js";
 
 /**
  * Encodes a primitive value into the term key format used by SABLI postings.
@@ -173,7 +173,7 @@ export class MemSegment<TDocument extends JsonObject = JsonObject> {
   }
 
   private allLiveDocuments(): PostingList {
-    return new SortedArrayPostingList([...this.#documents.keys()].filter((docId) => !this.#deleted.has(docId)));
+    return createPostingList([...this.#documents.keys()].filter((docId) => !this.#deleted.has(docId)));
   }
 
   private addPosting(index: Map<string, Set<DocId>>, key: string, docId: DocId): void {
@@ -183,7 +183,7 @@ export class MemSegment<TDocument extends JsonObject = JsonObject> {
   }
 
   private postingFromSet(values: ReadonlySet<DocId> | undefined): PostingList {
-    return new SortedArrayPostingList(values === undefined ? [] : [...values].filter((docId) => !this.#deleted.has(docId)));
+    return createPostingList(values === undefined ? [] : [...values].filter((docId) => !this.#deleted.has(docId)));
   }
 
   private candidatesForPredicate(predicate: QueryPredicate): PostingList {
@@ -191,14 +191,14 @@ export class MemSegment<TDocument extends JsonObject = JsonObject> {
     if (predicate.exists === true) {
       candidates = this.#bloom.mightContain(`path:${predicate.path}`)
         ? this.postingFromSet(this.#pathExists.get(predicate.path))
-        : new SortedArrayPostingList([]);
+        : createPostingList([]);
     }
     const equalityValue = "eq" in predicate ? predicate.eq : "contains" in predicate ? predicate.contains : undefined;
     if (equalityValue !== undefined) {
       const term = encodeTermKey(predicate.path, equalityValue);
       const equality = this.#bloom.mightContain(`term:${term}`)
         ? this.postingFromSet(this.#termPostings.get(term))
-        : new SortedArrayPostingList([]);
+        : createPostingList([]);
       candidates = candidates === undefined ? equality : candidates.intersect(equality);
     }
     const numeric = this.numericCandidates(predicate);
@@ -218,7 +218,7 @@ export class MemSegment<TDocument extends JsonObject = JsonObject> {
     if (!hasNumeric) {
       return undefined;
     }
-    return new SortedArrayPostingList(
+    return createPostingList(
       (this.#numericValues.get(predicate.path) ?? [])
         .filter(({ value }) => {
           if (predicate.gt !== undefined && value <= predicate.gt) {
@@ -245,18 +245,24 @@ export class MemSegment<TDocument extends JsonObject = JsonObject> {
 
   private candidatesForExpression(expression: QueryExpression): PostingList {
     if ("and" in expression) {
-      const [first, ...rest] = expression.and;
-      if (first === undefined) {
-        return new SortedArrayPostingList([]);
+      const candidates = expression.and
+        .map((child) => this.candidatesForExpression(child))
+        .sort((left, right) => left.size - right.size);
+      const [first, ...rest] = candidates;
+      if (first === undefined || first.size === 0) {
+        return createPostingList([]);
       }
-      let acc = this.candidatesForExpression(first);
+      let acc = first;
       for (const child of rest) {
-        acc = acc.intersect(this.candidatesForExpression(child));
+        acc = acc.intersect(child);
+        if (acc.size === 0) {
+          return acc;
+        }
       }
       return acc;
     }
     if ("or" in expression) {
-      let acc: PostingList = new SortedArrayPostingList([]);
+      let acc: PostingList = createPostingList([]);
       for (const child of expression.or) {
         acc = acc.union(this.candidatesForExpression(child));
       }

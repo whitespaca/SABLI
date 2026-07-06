@@ -78,6 +78,7 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
     }
     const lock = new FileLock(directory.paths.lock);
     await lock.acquire();
+    const segments: ImmutableSegment[] = [];
     try {
       await mkdir(directory.paths.segments, { recursive: true });
       const manifestStore = new ManifestStore(directory.paths.root, directory.paths.current);
@@ -89,8 +90,11 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
         await manifestStore.write(manifestStore.createInitial());
       }
       const manifest = await manifestStore.read();
-      const segmentStore = new SegmentStore(directory.paths.root, { expectedEntries: 10_000, falsePositiveRate: 0.01 });
-      const segments: ImmutableSegment[] = [];
+      const segmentStore = new SegmentStore(
+        directory.paths.root,
+        { expectedEntries: 10_000, falsePositiveRate: 0.01 },
+        { postingCacheMaxEntries: parsed.postingCacheMaxEntries }
+      );
       for (const entry of manifest.segments) {
         segments.push(await segmentStore.open(entry));
       }
@@ -133,6 +137,7 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
       });
       return opened;
     } catch (error) {
+      await Promise.all(segments.map((segment) => segment.close()));
       await lock.release();
       throw error;
     }
@@ -269,11 +274,13 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
    * Counts are approximate because delete tombstones and superseded versions can
    * remain physically present until manual compaction rewrites immutable segments.
    */
-  public stats(): Promise<SabliDatabaseStats> {
+  public async stats(): Promise<SabliDatabaseStats> {
     const immutableLive = this.#segments.reduce((sum, segment) => sum + segment.liveDocumentCount, 0);
     const immutableDeleted = this.#segments.reduce((sum, segment) => sum + segment.deletedDocumentCount, 0);
+    const cacheStats = this.#segments.map((segment) => segment.postingCacheStats);
+    const postingStats = await Promise.all(this.#segments.map((segment) => segment.postingStats()));
     const memLive = this.#mem.documentCount;
-    return Promise.resolve({
+    return {
       path: this.#directory.paths.root,
       state: isDatabaseOpen(this.#lifecycle) ? "open" : "closed",
       manifestVersion: this.#manifest.version,
@@ -284,8 +291,16 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
       approximateLiveDocumentCount: immutableLive + memLive,
       approximateDeletedDocumentCount: immutableDeleted + this.#mem.deletedDocumentCount,
       memSegmentDocumentCount: memLive,
-      compactionAvailable: isDatabaseOpen(this.#lifecycle)
-    });
+      immutablePathPostingKeyCount: postingStats.reduce((sum, stats) => sum + stats.pathKeyCount, 0),
+      immutablePathPostingCount: postingStats.reduce((sum, stats) => sum + stats.pathPostingCount, 0),
+      immutableTermPostingKeyCount: postingStats.reduce((sum, stats) => sum + stats.termKeyCount, 0),
+      immutableTermPostingCount: postingStats.reduce((sum, stats) => sum + stats.termPostingCount, 0),
+      compactionAvailable: isDatabaseOpen(this.#lifecycle),
+      postingCacheSize: cacheStats.reduce((sum, stats) => sum + stats.size, 0),
+      postingCacheMaxEntries: cacheStats.reduce((sum, stats) => sum + stats.maxEntries, 0),
+      postingCacheHits: cacheStats.reduce((sum, stats) => sum + stats.hits, 0),
+      postingCacheMisses: cacheStats.reduce((sum, stats) => sum + stats.misses, 0)
+    };
   }
 
   /**

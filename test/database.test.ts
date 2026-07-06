@@ -157,6 +157,50 @@ describe("SabliDatabase persistence", () => {
     expect(stats.memSegmentDocumentCount).toBe(1);
     expect(stats.approximateLiveDocumentCount).toBe(1);
     expect(stats.approximateDeletedDocumentCount).toBe(1);
+    expect(stats.immutablePathPostingKeyCount).toBeGreaterThan(0);
+    expect(stats.immutableTermPostingKeyCount).toBeGreaterThan(0);
+    expect(stats.postingCacheSize).toBe(0);
+    await db.close();
+  });
+
+  it("records posting cache hits and misses without changing results", async () => {
+    const path = await tempDbPath();
+    const db = await SabliDatabase.open({ path, createIfMissing: true, postingCache: { maxEntries: 8 } });
+    await db.insert({ user: { name: "cached" }, tags: ["cache"] });
+    await db.flush();
+    expect((await db.search({ where: { "tags[]": { contains: "cache" } } })).count).toBe(1);
+    const afterMiss = await db.stats();
+    expect(afterMiss.postingCacheMisses).toBeGreaterThan(0);
+    expect((await db.search({ where: { "tags[]": { contains: "cache" } } })).count).toBe(1);
+    const afterHit = await db.stats();
+    expect(afterHit.postingCacheHits).toBeGreaterThan(afterMiss.postingCacheHits);
+    expect(afterHit.postingCacheSize).toBeLessThanOrEqual(afterHit.postingCacheMaxEntries);
+    await db.close();
+  });
+
+  it("posting cache does not bypass delete bitmap filtering", async () => {
+    const path = await tempDbPath();
+    const db = await SabliDatabase.open({ path, createIfMissing: true, postingCache: { maxEntries: 8 } });
+    const inserted = await db.insert({ user: { name: "cached-delete" }, tags: ["cache-delete"] });
+    await db.flush();
+    expect((await db.search({ where: { "tags[]": { contains: "cache-delete" } } })).count).toBe(1);
+    await db.delete(inserted.docId);
+    expect((await db.search({ where: { "tags[]": { contains: "cache-delete" } } })).count).toBe(0);
+    expect((await db.stats()).postingCacheHits).toBeGreaterThan(0);
+    await db.close();
+  });
+
+  it("posting cache can be disabled", async () => {
+    const path = await tempDbPath();
+    const db = await SabliDatabase.open({ path, createIfMissing: true, postingCache: { enabled: false } });
+    await db.insert({ user: { name: "no-cache" }, tags: ["no-cache"] });
+    await db.flush();
+    await db.search({ where: { "tags[]": { contains: "no-cache" } } });
+    await db.search({ where: { "tags[]": { contains: "no-cache" } } });
+    const stats = await db.stats();
+    expect(stats.postingCacheMaxEntries).toBe(0);
+    expect(stats.postingCacheSize).toBe(0);
+    expect(stats.postingCacheHits).toBe(0);
     await db.close();
   });
 
@@ -592,6 +636,40 @@ describe("SabliDatabase persistence", () => {
     expect((await reopened.search({ where: { "user.name": { eq: "generation-one" } } })).count).toBe(1);
     expect((await reopened.search({ where: { "user.name": { eq: "generation-two" } } })).count).toBe(1);
     expect((await reopened.stats()).activeWalGeneration).toBeGreaterThanOrEqual(2);
+    await reopened.close();
+  });
+
+  it("returns equivalent query results across memory flush reopen and compaction", async () => {
+    const path = await tempDbPath();
+    const seed = async (db: SabliDatabase): Promise<void> => {
+      const first = await db.insert({ user: { name: "kim", age: 31 }, tags: ["backend", "typescript"], status: "old" });
+      await db.insert({ user: { name: "lee", age: 25 }, tags: ["frontend"], status: "keep" });
+      const third = await db.insert({ user: { name: "park", age: 40 }, tags: ["backend"], status: "delete" });
+      await db.update(first.docId, { user: { name: "kim", age: 32 }, tags: ["backend", "database"], status: "new" });
+      await db.delete(third.docId);
+    };
+    const queries = [
+      { where: { "user.name": { eq: "kim" } } },
+      { where: { "user.age": { exists: true } } },
+      { where: { "tags[]": { contains: "backend" } } },
+      { where: { and: [{ path: "tags[]", contains: "backend" }, { path: "status", eq: "new" }] } },
+      { where: { or: [{ path: "status", eq: "new" }, { path: "status", eq: "keep" }] } }
+    ] as const;
+    const readAll = async (db: SabliDatabase): Promise<readonly (readonly number[])[]> => Promise.all(
+      queries.map(async (query) => (await db.search(query)).documents.map((hit) => Number(hit.docId)))
+    );
+
+    const db = await SabliDatabase.open({ path, createIfMissing: true });
+    await seed(db);
+    const memory = await readAll(db);
+    await db.flush();
+    expect(await readAll(db)).toEqual(memory);
+    await db.close();
+
+    const reopened = await SabliDatabase.open({ path, createIfMissing: false });
+    expect(await readAll(reopened)).toEqual(memory);
+    await reopened.compact();
+    expect(await readAll(reopened)).toEqual(memory);
     await reopened.close();
   });
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 - Benchmark-Driven Query Performance And Posting Optimization
+
+- Added adaptive posting list backends with compact small postings and sorted-array postings with merge-based set operations.
+- Ordered AND-query candidate intersections by posting cardinality and short-circuited empty intersections.
+- Added a bounded immutable-segment posting cache with read-only hit, miss, and size diagnostics in `db.stats()`.
+- Added derived immutable posting statistics for path and term postings.
+- Expanded benchmark scripts with `--queries`, `--warmup`, and `--path`, and added equality, contains, AND, and repeated cached search measurements.
+- Added posting correctness tests and query result equivalence tests across memory, flush, reopen, and compaction.
+- Preserved atomic update WAL behavior, immutable segment overwrite protection, TypeSea validation boundaries, and exact final verification.
+
 ## 1.2.2 - TypeSea v0.4.0 Validation Contract Hardening
 
 - Upgraded TypeSea to v0.4.0 and hardened SABLI validation wrappers around public input and persisted storage metadata.

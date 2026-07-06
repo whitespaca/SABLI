@@ -9,7 +9,7 @@ import {
 } from "./dataset.js";
 
 const options = parseBenchOptions(process.argv.slice(2));
-const path = await createBenchmarkDatabasePath("insert");
+const path = await createBenchmarkDatabasePath("insert", options.path);
 
 try {
   const db = await SabliDatabase.open({ path, createIfMissing: true });
@@ -20,5 +20,5 @@ try {
   await db.close();
   printMeasurement("Insert benchmark", options.count, performance.now() - start);
 } finally {
-  await cleanupBenchmarkDatabase(path, options.keep);
+  await cleanupBenchmarkDatabase(path, options.keep, options.path === undefined);
 }

@@ -11,6 +11,7 @@ import type { ManifestSegmentEntry } from "./ManifestStore.js";
 export class SegmentStore {
   readonly #root: string;
   readonly #writer: SegmentWriter;
+  readonly #postingCacheMaxEntries: number;
 
   /**
    * Creates a segment store.
@@ -18,9 +19,10 @@ export class SegmentStore {
    * @param databaseRoot - Database root directory.
    * @param bloomOptions - Bloom filter options.
    */
-  public constructor(databaseRoot: string, bloomOptions: BloomOptions) {
+  public constructor(databaseRoot: string, bloomOptions: BloomOptions, options: { readonly postingCacheMaxEntries?: number } = {}) {
     this.#root = databaseRoot;
     this.#writer = new SegmentWriter(join(databaseRoot, "segments"), bloomOptions);
+    this.#postingCacheMaxEntries = options.postingCacheMaxEntries ?? 128;
   }
 
   /**
@@ -37,7 +39,7 @@ export class SegmentStore {
    * @returns Immutable segment reader.
    */
   public async open(entry: ManifestSegmentEntry): Promise<ImmutableSegment> {
-    return ImmutableSegment.open(join(this.#root, entry.path));
+    return ImmutableSegment.open(join(this.#root, entry.path), { postingCacheMaxEntries: this.#postingCacheMaxEntries });
   }
 
   /**

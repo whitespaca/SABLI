@@ -29,6 +29,22 @@ export interface SabliDatabaseStats {
   readonly approximateDeletedDocumentCount: number;
   /** Number of visible documents currently buffered in memory. */
   readonly memSegmentDocumentCount: number;
+  /** Number of immutable-segment path-exists posting keys. */
+  readonly immutablePathPostingKeyCount: number;
+  /** Total immutable-segment path-exists posting rows. */
+  readonly immutablePathPostingCount: number;
+  /** Number of immutable-segment equality or contains term posting keys. */
+  readonly immutableTermPostingKeyCount: number;
+  /** Total immutable-segment equality or contains posting rows. */
+  readonly immutableTermPostingCount: number;
   /** True when manual compaction can be called on this database handle. */
   readonly compactionAvailable: boolean;
+  /** Current number of cached immutable-segment posting lists. */
+  readonly postingCacheSize: number;
+  /** Maximum total cached immutable-segment posting lists. */
+  readonly postingCacheMaxEntries: number;
+  /** Number of immutable-segment posting cache hits. */
+  readonly postingCacheHits: number;
+  /** Number of immutable-segment posting cache misses. */
+  readonly postingCacheMisses: number;
 }

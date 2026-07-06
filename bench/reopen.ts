@@ -9,7 +9,7 @@ import {
 } from "./dataset.js";
 
 const options = parseBenchOptions(process.argv.slice(2));
-const path = await createBenchmarkDatabasePath("reopen");
+const path = await createBenchmarkDatabasePath("reopen", options.path);
 
 try {
   const db = await SabliDatabase.open({ path, createIfMissing: true });
@@ -25,5 +25,5 @@ try {
   printMeasurement("Reopen and search benchmark", options.count, performance.now() - start);
   console.log(`Search returned ${String(results.count)} documents after reopen.`);
 } finally {
-  await cleanupBenchmarkDatabase(path, options.keep);
+  await cleanupBenchmarkDatabase(path, options.keep, options.path === undefined);
 }

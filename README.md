@@ -223,7 +223,23 @@ const stats = await db.stats();
 console.dir(stats, { depth: null });
 ```
 
-The result includes the database path, open or closed state, manifest version, next document identifier, immutable segment count, active WAL generation, checkpoint sequence, approximate visible and deleted document counts, memory segment document count, and whether compaction can be called on the current handle.
+The result includes the database path, open or closed state, manifest version, next document identifier, immutable segment count, active WAL generation, checkpoint sequence, approximate visible and deleted document counts, memory segment document count, derived immutable posting counts, posting cache counters, and whether compaction can be called on the current handle.
+
+## Performance Notes
+
+SABLI uses adaptive internal posting lists for candidate document identifiers. Very small posting sets use a compact small-list representation, while larger sets use sorted arrays with binary-search membership and merge-based set operations. AND queries intersect smaller candidate sets first and short-circuit empty intersections.
+
+Immutable disk segments keep a small bounded posting cache for repeated path and term lookups. The cache stores raw posting candidates and applies delete bitmap filtering after every lookup, so cached results cannot bypass delete or update visibility. The cache is enabled by default and can be disabled when opening a database:
+
+```ts
+const db = await SabliDatabase.open({
+  path: "./data/no-cache.sabli",
+  createIfMissing: true,
+  postingCache: { enabled: false }
+});
+```
+
+Exact final verification remains part of every search result path. Posting lists, Bloom filters, and the cache only reduce candidate work; SABLI still reads and verifies raw JSON documents before returning matches.
 
 ## Query Examples
 
@@ -333,18 +349,18 @@ SABLI includes deterministic TypeScript benchmark scripts for local measurement:
 
 ```bash
 npm run bench:insert -- --count 1000
-npm run bench:search -- --count 1000
+npm run bench:search -- --count 1000 --queries 100 --warmup 10
 npm run bench:reopen -- --count 1000
 npm run bench:compaction -- --count 1000
 ```
 
-The scripts generate synthetic JSON documents, use temporary database directories by default, and print elapsed time in English. Pass `--keep` to keep the generated database directory for inspection.
+The scripts generate synthetic JSON documents, use temporary database directories by default, and print elapsed time in English. Pass `--keep` to keep the generated database directory for inspection, or `--path ./bench.sabli` to use a specific database path. Search benchmarks report equality, contains, AND, and repeated cached query latency.
 
-Benchmark results depend on hardware, filesystem behavior, Node.js version, durability mode, and active operating system caches. The current milestone prioritizes correctness-first storage behavior over benchmark-driven optimization.
+Benchmark results depend on hardware, filesystem behavior, Node.js version, durability mode, and active operating system caches. Normal tests only verify benchmark scripts run and do not enforce strict performance thresholds.
 
 ## Current Limitations
 
-This release includes manual compaction and WAL generation checkpointing. Automatic background compaction, advanced compaction selection, optimized posting encodings, and advanced scope-aware array `elemMatch` semantics remain future work.
+This release includes manual compaction, WAL generation checkpointing, adaptive posting lists, and a bounded immutable-segment posting cache. Automatic background compaction, advanced compaction selection, compressed posting encodings, and advanced scope-aware array `elemMatch` semantics remain future work.
 
 ## Future Roadmap
 

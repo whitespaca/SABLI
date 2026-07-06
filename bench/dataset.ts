@@ -9,8 +9,14 @@ import type { JsonObject } from "../src/index.js";
 export interface BenchOptions {
   /** Number of synthetic documents to use. */
   readonly count: number;
+  /** Number of measured search queries to run. */
+  readonly queries: number;
+  /** Number of warmup search queries to run before measurement. */
+  readonly warmup: number;
   /** Whether the temporary database directory should be kept after the run. */
   readonly keep: boolean;
+  /** Optional database path supplied by the caller. */
+  readonly path?: string;
 }
 
 /**
@@ -45,6 +51,9 @@ export function createBenchmarkDocument(id: number): JsonObject {
  */
 export function parseBenchOptions(args: readonly string[], defaultCount = 1000): BenchOptions {
   let count = defaultCount;
+  let queries = 100;
+  let warmup = 10;
+  let path: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg?.startsWith("--count=")) {
@@ -54,13 +63,43 @@ export function parseBenchOptions(args: readonly string[], defaultCount = 1000):
     if (arg === "--count") {
       count = Number(args[index + 1]);
     }
+    if (arg?.startsWith("--queries=")) {
+      queries = Number(arg.slice("--queries=".length));
+      continue;
+    }
+    if (arg === "--queries") {
+      queries = Number(args[index + 1]);
+    }
+    if (arg?.startsWith("--warmup=")) {
+      warmup = Number(arg.slice("--warmup=".length));
+      continue;
+    }
+    if (arg === "--warmup") {
+      warmup = Number(args[index + 1]);
+    }
+    if (arg?.startsWith("--path=")) {
+      path = arg.slice("--path=".length);
+      continue;
+    }
+    if (arg === "--path") {
+      path = args[index + 1];
+    }
   }
   if (!Number.isInteger(count) || count < 1) {
     throw new Error("Invalid benchmark count: expected a positive integer.");
   }
+  if (!Number.isInteger(queries) || queries < 1) {
+    throw new Error("Invalid benchmark queries: expected a positive integer.");
+  }
+  if (!Number.isInteger(warmup) || warmup < 0) {
+    throw new Error("Invalid benchmark warmup: expected a non-negative integer.");
+  }
   return {
     count,
-    keep: args.includes("--keep")
+    queries,
+    warmup,
+    keep: args.includes("--keep"),
+    ...(path === undefined ? {} : { path })
   };
 }
 
@@ -70,7 +109,10 @@ export function parseBenchOptions(args: readonly string[], defaultCount = 1000):
  * @param name - Benchmark name used in the temporary directory prefix.
  * @returns Database directory path.
  */
-export async function createBenchmarkDatabasePath(name: string): Promise<string> {
+export async function createBenchmarkDatabasePath(name: string, requestedPath?: string): Promise<string> {
+  if (requestedPath !== undefined) {
+    return requestedPath;
+  }
   const root = await mkdtemp(join(tmpdir(), `sabli-${name}-`));
   return join(root, "database.sabli");
 }
@@ -81,8 +123,8 @@ export async function createBenchmarkDatabasePath(name: string): Promise<string>
  * @param path - Database directory path.
  * @param keep - Whether to keep the temporary directory.
  */
-export async function cleanupBenchmarkDatabase(path: string, keep: boolean): Promise<void> {
-  if (keep) {
+export async function cleanupBenchmarkDatabase(path: string, keep: boolean, removeRoot = true): Promise<void> {
+  if (keep || !removeRoot) {
     console.log(`Kept benchmark database at ${path}`);
     return;
   }
@@ -93,9 +135,10 @@ export async function cleanupBenchmarkDatabase(path: string, keep: boolean): Pro
  * Prints one benchmark measurement in a consistent English format.
  *
  * @param label - Measurement label.
- * @param count - Document count used by the benchmark.
+ * @param count - Unit count used by the benchmark.
  * @param elapsedMs - Elapsed time in milliseconds.
+ * @param unit - Unit label to print.
  */
-export function printMeasurement(label: string, count: number, elapsedMs: number): void {
-  console.log(`${label}: ${String(count)} documents in ${elapsedMs.toFixed(2)} ms`);
+export function printMeasurement(label: string, count: number, elapsedMs: number, unit = "documents"): void {
+  console.log(`${label}: ${String(count)} ${unit} in ${elapsedMs.toFixed(2)} ms`);
 }

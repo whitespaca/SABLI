@@ -6,7 +6,11 @@ export const DatabaseOptionsGuard = compile(t.strictObject({
   path: t.string.min(1),
   createIfMissing: t.boolean.optional(),
   memSegmentMaxDocuments: t.number.int().gte(1).optional(),
-  durability: t.union(t.literal("strict"), t.literal("relaxed")).optional()
+  durability: t.union(t.literal("strict"), t.literal("relaxed")).optional(),
+  postingCache: t.strictObject({
+    enabled: t.boolean.optional(),
+    maxEntries: t.number.int().gte(0).optional()
+  }).optional()
 }), { name: "isSabliDatabaseOptions" });
 
 /**
@@ -21,6 +25,8 @@ export interface SabliDatabaseOptions {
   readonly memSegmentMaxDocuments: number;
   /** Durability mode for acknowledged writes. */
   readonly durability: "strict" | "relaxed";
+  /** Maximum immutable-segment posting cache entries. Zero disables caching. */
+  readonly postingCacheMaxEntries: number;
 }
 
 /**
@@ -39,6 +45,7 @@ export function parseDatabaseOptions(input: unknown): SabliDatabaseOptions {
     path: record.path,
     createIfMissing: record.createIfMissing ?? false,
     memSegmentMaxDocuments: record.memSegmentMaxDocuments ?? 1000,
-    durability: record.durability ?? "strict"
+    durability: record.durability ?? "strict",
+    postingCacheMaxEntries: record.postingCache?.enabled === false ? 0 : record.postingCache?.maxEntries ?? 128
   };
 }

@@ -1,4 +1,4 @@
-import { SortedArrayPostingList, type PostingList } from "../indexes/posting.js";
+import { createPostingList, type PostingList } from "../indexes/posting.js";
 import type { DocId } from "../types/json.js";
 
 /**
@@ -13,7 +13,7 @@ export class CandidateSet {
    * @param docIds - Candidate document identifiers.
    */
   public constructor(docIds: readonly DocId[]) {
-    this.#postings = new SortedArrayPostingList(docIds);
+    this.#postings = createPostingList(docIds);
   }
 
   /**

@@ -9,7 +9,7 @@ import {
 } from "./dataset.js";
 
 const options = parseBenchOptions(process.argv.slice(2));
-const path = await createBenchmarkDatabasePath("compaction");
+const path = await createBenchmarkDatabasePath("compaction", options.path);
 
 try {
   const db = await SabliDatabase.open({ path, createIfMissing: true, memSegmentMaxDocuments: 500 });
@@ -37,5 +37,5 @@ try {
   printMeasurement("Compaction benchmark", options.count, elapsed);
   console.log(`Compacted to ${String(stats.immutableSegmentCount)} immutable segment(s).`);
 } finally {
-  await cleanupBenchmarkDatabase(path, options.keep);
+  await cleanupBenchmarkDatabase(path, options.keep, options.path === undefined);
 }

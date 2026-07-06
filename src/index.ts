@@ -17,8 +17,8 @@ export { SabliEngine } from "./engine/sabli-engine.js";
 export { extractEntries } from "./extract/extractor.js";
 export type { ExtractedEntry, ExtractedValueType } from "./extract/extractor.js";
 export { MutableSegment } from "./indexes/mutable-segment.js";
-export { SortedArrayPostingList } from "./indexes/posting.js";
-export type { PostingList } from "./indexes/posting.js";
+export { createPostingList, SmallPostingList, SortedArrayPostingList } from "./indexes/posting.js";
+export type { PostingList, PostingListOptions } from "./indexes/posting.js";
 export type {
   AndExpression,
   BloomOptions,
