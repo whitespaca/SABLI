@@ -1,6 +1,7 @@
 import { SabliCorruptionError, SabliValidationError } from "../errors/index.js";
 import type { BloomOptions } from "../query/ast.js";
 import { SerializedBloomFilterGuard } from "../validation/schemas.js";
+import { assertValid } from "../validation/assertValid.js";
 import { hashString } from "./hash.js";
 
 /**
@@ -118,11 +119,7 @@ export class BloomFilter {
    * @throws {SabliCorruptionError} If the serialized data is malformed.
    */
   public static deserialize(input: unknown): BloomFilter {
-    const result = SerializedBloomFilterGuard.check(input);
-    if (!result.ok) {
-      throw new SabliCorruptionError("Invalid Bloom filter data: unsupported or malformed metadata.");
-    }
-    const data = result.value;
+    const data = assertValid(SerializedBloomFilterGuard, input, "corruption", "Invalid Bloom filter data: unsupported or malformed metadata.");
     return new BloomFilter(data.bitSize, data.hashCount, fromBase64(data.data));
   }
 

@@ -7,6 +7,7 @@ import {
   WalEnvelopeInputGuard,
   WalRecordInputGuard
 } from "../validation/schemas.js";
+import { assertValid } from "../validation/assertValid.js";
 
 /**
  * Insert WAL payload.
@@ -172,14 +173,13 @@ export class WalStore {
     } catch {
       return undefined;
     }
-    const envelope = WalEnvelopeInputGuard.check(value);
-    if (!envelope.ok) {
+    if (!WalEnvelopeInputGuard.is(value)) {
       return undefined;
     }
-    if (checksum(stableJson(envelope.value.record)) !== envelope.value.checksum) {
+    if (checksum(stableJson(value.record)) !== value.checksum) {
       throw new SabliRecoveryError("Invalid WAL record: checksum mismatch.");
     }
-    return parseWalRecord(envelope.value.record);
+    return parseWalRecord(value.record);
   }
 }
 
@@ -191,11 +191,7 @@ export class WalStore {
  * @throws {SabliRecoveryError} If the record is structurally invalid.
  */
 export function parseWalRecord(input: unknown): WalRecord {
-  const result = WalRecordInputGuard.check(input);
-  if (!result.ok) {
-    throw new SabliRecoveryError("Invalid WAL record: expected a versioned WAL record object.");
-  }
-  const record = result.value;
+  const record = assertValid(WalRecordInputGuard, input, "recovery", "Invalid WAL record.");
   if (record.type === "delete") {
     return { format: "sabli-wal-record", version: 1, sequence: record.sequence, type: "delete", docId: toDocId(record.docId) };
   }

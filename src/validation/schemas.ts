@@ -16,9 +16,7 @@ export const JsonPrimitiveGuard: Guard<JsonPrimitive> = t.union(
 /**
  * TypeSea guard for recursive JSON values.
  */
-export const JsonValueGuard: Guard<JsonValue> = t.lazy((): Guard<JsonValue> =>
-  t.union(JsonPrimitiveGuard, t.array(JsonValueGuard), t.record(JsonValueGuard))
-);
+export const JsonValueGuard: Guard<JsonValue> = t.json() as Guard<JsonValue>;
 
 /**
  * TypeSea guard for SABLI JSON document roots.
@@ -45,9 +43,9 @@ export interface SabliOptionsInput {
  * Compiled TypeSea guard for unknown public options objects before defaults are applied.
  */
 export const OptionsInputGuard = compile(
-  t.object({
+  t.strictObject({
     mutableSegmentMaxDocuments: t.number.int().gte(1).optional(),
-    bloom: t.object({
+    bloom: t.strictObject({
       falsePositiveRate: t.number.gte(0).lte(1).optional(),
       expectedEntries: t.number.int().gte(1).optional()
     }).optional()
@@ -67,7 +65,7 @@ export const DocIdInputGuard: Guard<number> = compile(
  * TypeSea guard for serialized Bloom filter data.
  */
 export const SerializedBloomFilterGuard: Guard<SerializedBloomFilter> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-bloom"),
     version: t.literal(1),
     bitSize: t.number.int().gte(1),
@@ -92,7 +90,7 @@ export interface SegmentManifestInput {
  * TypeSea guard for lightweight segment manifests.
  */
 export const SegmentManifestInputGuard: Guard<SegmentManifestInput> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-segment"),
     version: t.literal(1),
     segmentId: t.number.int().gte(0),
@@ -129,12 +127,12 @@ export interface DatabaseManifestInput {
  * TypeSea guard for persisted database manifests.
  */
 export const DatabaseManifestInputGuard: Guard<DatabaseManifestInput> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-manifest"),
     version: t.literal(1),
     nextDocId: t.number.int().gte(1),
     nextSegmentId: t.number.int().gte(1),
-    segments: t.array(t.object({
+    segments: t.array(t.strictObject({
       segmentId: t.number.int().gte(1),
       path: t.string.min(1),
       docCount: t.number.int().gte(0)
@@ -179,7 +177,7 @@ export type WalRecordInput = WalWriteRecordInput | WalDeleteRecordInput;
  */
 export const WalRecordInputGuard: Guard<WalRecordInput> = compile(
   t.union(
-    t.object({
+    t.strictObject({
       format: t.literal("sabli-wal-record"),
       version: t.literal(1),
       sequence: t.number.int().gte(1),
@@ -187,7 +185,7 @@ export const WalRecordInputGuard: Guard<WalRecordInput> = compile(
       docId: t.number.int().gte(1),
       document: JsonObjectGuard
     }),
-    t.object({
+    t.strictObject({
       format: t.literal("sabli-wal-record"),
       version: t.literal(1),
       sequence: t.number.int().gte(1),
@@ -195,7 +193,7 @@ export const WalRecordInputGuard: Guard<WalRecordInput> = compile(
       docId: t.number.int().gte(1),
       document: JsonObjectGuard
     }),
-    t.object({
+    t.strictObject({
       format: t.literal("sabli-wal-record"),
       version: t.literal(1),
       sequence: t.number.int().gte(1),
@@ -218,7 +216,7 @@ export interface WalEnvelopeInput {
  * TypeSea guard for WAL envelopes.
  */
 export const WalEnvelopeInputGuard: Guard<WalEnvelopeInput> = compile(
-  t.object({
+  t.strictObject({
     record: WalRecordInputGuard,
     checksum: t.string
   }),
@@ -229,10 +227,10 @@ export const WalEnvelopeInputGuard: Guard<WalEnvelopeInput> = compile(
  * TypeSea guard for document offset tables.
  */
 export const OffsetTableFileGuard: Guard<OffsetTableFile> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-doc-offsets"),
     version: t.literal(1),
-    offsets: t.array(t.object({
+    offsets: t.array(t.strictObject({
       docId: t.number.int().gte(1),
       offset: t.number.int().gte(0),
       length: t.number.int().gte(0)
@@ -254,10 +252,10 @@ export interface DeleteBitmapFileInput {
  * TypeSea guard for immutable segment delete bitmaps.
  */
 export const DeleteBitmapFileGuard: Guard<DeleteBitmapFileInput> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-delete-bitmap"),
     version: t.literal(1),
-    deleted: t.array(t.number)
+    deleted: t.array(t.number.int().gte(1))
   }),
   { name: "isDeleteBitmapFile" }
 );
@@ -285,14 +283,14 @@ export interface PostingIndexFileInput {
  * TypeSea guard for immutable segment posting indexes.
  */
 export const PostingIndexFileGuard: Guard<PostingIndexFileInput> = compile(
-  t.object({
+  t.strictObject({
     format: t.literal("sabli-postings"),
     version: t.literal(1),
     pathExists: t.array(t.tuple([t.string, t.array(t.number.int().gte(1))])),
     termPostings: t.array(t.tuple([t.string, t.array(t.number.int().gte(1))])),
     numericValues: t.array(t.tuple([
       t.string,
-      t.array(t.object({
+      t.array(t.strictObject({
         docId: t.number.int().gte(1),
         value: t.number
       }))

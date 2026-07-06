@@ -255,9 +255,15 @@ Supported initial operators include `eq`, `neq`, `exists`, `contains`, `gt`, `gt
 
 ## Validation Behavior
 
-All public inputs are validated at runtime with TypeSea-backed SABLI validation helpers. Validation failures are wrapped in SABLI error classes such as `SabliValidationError` and `SabliCorruptionError`.
+SABLI uses TypeSea v0.4.0-compatible runtime validation. Public input is validated with safe TypeSea semantics, and WAL records, manifests, segment metadata, checkpoint-related manifest fields, document offset tables, delete bitmaps, posting indexes, and Bloom metadata are validated when loaded.
 
-Documents must be JSON-compatible plain objects. Values such as `undefined`, `Date`, `Map`, `Set`, functions, symbols, and bigint values must be serialized before insertion.
+Validation failures are wrapped in SABLI error classes such as `SabliValidationError`, `SabliRecoveryError`, and `SabliCorruptionError`; raw TypeSea diagnostics are not part of the public API. SABLI does not use TypeSea unsafe or unchecked validation modes for public or persisted input.
+
+SABLI is a Node.js 22+ library. Its TypeSea validators may be compiled at module startup in Node.js; CSP-restricted browser runtimes are not a supported SABLI execution target.
+
+Inserted documents must be JSON-compatible plain objects at the root. Nested arrays and `null` values are allowed, but primitive root values, `undefined`, `NaN`, `Infinity`, `-Infinity`, functions, symbols, bigint values, sparse arrays, cyclic values, and accessor-backed properties are rejected. Values such as `Date`, `Map`, and `Set` must be serialized before insertion.
+
+Search uses indexes and Bloom filters only to generate candidates. Every candidate is still checked against the raw JSON document with exact final verification before it is returned.
 
 ## Error Handling
 

@@ -1,4 +1,5 @@
 import type { Issue } from "typesea";
+import type { SabliValidationIssue } from "./ValidationResult.js";
 
 function formatPath(path: readonly (string | number)[]): string {
   if (path.length === 0) {
@@ -18,7 +19,7 @@ export function formatValidationError(summary: string, error: unknown): string {
   if (!Array.isArray(error) || error.length === 0) {
     return summary;
   }
-  const issues = error as readonly Issue[];
+  const issues = error as readonly (Issue | SabliValidationIssue)[];
   const details = issues.slice(0, 3).map((issue) => {
     const expected = issue.expected === undefined ? issue.code : issue.expected;
     const actual = issue.actual === undefined ? "unknown" : issue.actual;

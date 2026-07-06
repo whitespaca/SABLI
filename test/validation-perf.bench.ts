@@ -27,12 +27,12 @@ function parseManual(input: unknown) {
   return { path: record.path, createIfMissing, memSegmentMaxDocuments, durability };
 }
 
-const DatabaseOptionsGuard = compile(t.object({
+const DatabaseOptionsGuard = compile(t.strictObject({
   path: t.string.min(1),
   createIfMissing: t.boolean.optional(),
   memSegmentMaxDocuments: t.number.int().gte(1).optional(),
   durability: t.union(t.literal("strict"), t.literal("relaxed")).optional()
-}));
+}), { name: "isBenchmarkDatabaseOptions" });
 
 function parseCompiled(input: unknown) {
   if (typeof input !== "object" || input === null || Array.isArray(input)) throw new Error("Invalid");

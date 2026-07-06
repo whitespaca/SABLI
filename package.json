@@ -1,6 +1,6 @@
 {
   "name": "sablidb",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "description": "Segmented Adaptive Bloom-LSM Inverted Index for JSON documents.",
   "type": "module",
   "private": false,
@@ -59,7 +59,7 @@
     "node": ">=22"
   },
   "dependencies": {
-    "typesea": "^0.3.2"
+    "typesea": "^0.4.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

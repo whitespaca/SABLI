@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.2.2 - TypeSea v0.4.0 Validation Contract Hardening
+
+- Upgraded TypeSea to v0.4.0 and hardened SABLI validation wrappers around public input and persisted storage metadata.
+- Added hostile-input tests for getter-backed objects, prototype-pollution-looking keys, symbol and non-enumerable properties, sparse arrays, cyclic values, and invalid JSON values.
+- Tightened document, query, WAL, manifest, segment metadata, and persisted index metadata validation with stricter object schemas where compatibility allows.
+- Kept raw TypeSea diagnostics out of SABLI's public API by wrapping validation failures as SABLI domain errors.
+- Preserved the existing public API shape and exact final verification for search results.
+
 ## 1.2.0 - Compaction, Checkpointing, And Release Hardening
 
 - Added manual `compact()` support that rewrites visible immutable-segment documents into a compacted segment.

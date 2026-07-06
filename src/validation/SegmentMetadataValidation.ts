@@ -4,8 +4,9 @@ import { toSegmentId } from "../types/json.js";
 import { checksum, stableJson } from "../storage/Checksum.js";
 import { t, compile } from "typesea";
 import { SerializedBloomFilterGuard } from "./schemas.js";
+import { assertValid } from "./assertValid.js";
 
-export const SegmentMetadataGuard = compile(t.object({
+export const SegmentMetadataGuard = compile(t.strictObject({
   format: t.literal("sabli-segment"),
   version: t.literal(1),
   segmentId: t.number.int().gte(0),
@@ -15,7 +16,7 @@ export const SegmentMetadataGuard = compile(t.object({
   createdAt: t.string,
   bloom: SerializedBloomFilterGuard,
   checksum: t.string
-}));
+}), { name: "isSegmentMetadata" });
 
 /**
  * Validates immutable segment metadata loaded from disk.
@@ -28,30 +29,7 @@ export function parseSegmentMetadata(input: unknown): SegmentMetadata {
   if (typeof input !== "object" || input === null || Array.isArray(input)) {
     throw new SabliCorruptionError("Invalid segment metadata: expected an object.");
   }
-  const result = SegmentMetadataGuard.check(input);
-  if (!result.ok) {
-    const issue = result.error[0];
-    if (issue !== undefined && issue.path.length > 0) {
-      const field = issue.path[0];
-      if (field === "format" || field === "version") {
-        throw new SabliCorruptionError("Invalid segment metadata: unsupported format or version.");
-      }
-      if (typeof field === "string" && ["segmentId", "docCount", "minDocId", "maxDocId"].includes(field)) {
-        throw new SabliCorruptionError(`Invalid segment metadata: ${field} must be a non-negative integer.`);
-      }
-      if (field === "createdAt") {
-        throw new SabliCorruptionError("Invalid segment metadata: createdAt must be an ISO timestamp.");
-      }
-      if (field === "bloom") {
-        throw new SabliCorruptionError("Invalid segment metadata: bloom must be an object.");
-      }
-      if (field === "checksum") {
-        throw new SabliCorruptionError("Invalid segment metadata: checksum must be a string.");
-      }
-    }
-    throw new SabliCorruptionError(`Invalid segment metadata.`);
-  }
-  const record = result.value;
+  const record = assertValid(SegmentMetadataGuard, input, "corruption", "Invalid segment metadata.");
   if (Number.isNaN(Date.parse(record.createdAt))) {
     throw new SabliCorruptionError("Invalid segment metadata: createdAt must be an ISO timestamp.");
   }

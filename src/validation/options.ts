@@ -1,6 +1,6 @@
 import { SabliValidationError } from "../errors/index.js";
 import type { SabliOptions } from "../query/ast.js";
-import { formatValidationError } from "./errors.js";
+import { assertValid } from "./assertValid.js";
 import { OptionsInputGuard } from "./schemas.js";
 
 /**
@@ -22,11 +22,7 @@ export const DEFAULT_SABLI_OPTIONS: SabliOptions = {
  * @throws {SabliValidationError} If the options are invalid.
  */
 export function parseSabliOptions(input: unknown): SabliOptions {
-  const result = OptionsInputGuard.check(input);
-  if (!result.ok) {
-    throw new SabliValidationError(formatValidationError("Invalid options.", result.error));
-  }
-  const options = result.value ?? {};
+  const options = assertValid(OptionsInputGuard, input, "public", "Invalid options.") ?? {};
   const bloom = options.bloom ?? {};
   if (bloom.falsePositiveRate !== undefined && (bloom.falsePositiveRate <= 0 || bloom.falsePositiveRate >= 1)) {
     throw new SabliValidationError("Invalid options: bloom.falsePositiveRate must be greater than 0 and less than 1.");

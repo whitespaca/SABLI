@@ -1,9 +1,9 @@
 import { open, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { SabliCorruptionError } from "../errors/index.js";
 import type { JsonObject } from "../types/json.js";
 import { toDocId, type DocId } from "../types/json.js";
 import { JsonObjectGuard } from "../validation/schemas.js";
+import { assertValid } from "../validation/assertValid.js";
 import type { DocumentOffset, OffsetTableFile } from "./OffsetTable.js";
 
 /**
@@ -79,11 +79,7 @@ export class DocumentBlockReader {
     const buffer = Buffer.alloc(offset.length);
     await this.#handle.read(buffer, 0, offset.length, offset.offset);
     const parsed: unknown = JSON.parse(buffer.toString("utf8"));
-    const result = JsonObjectGuard.check(parsed);
-    if (!result.ok) {
-      throw new SabliCorruptionError("Invalid document block: document payload must be a JSON object.");
-    }
-    return result.value;
+    return assertValid(JsonObjectGuard, parsed, "corruption", "Invalid document block: document payload must be a JSON object.");
   }
 
   /**

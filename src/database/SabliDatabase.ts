@@ -1,5 +1,5 @@
 import { mkdir, rm } from "node:fs/promises";
-import { SabliDatabaseClosedError, SabliStorageError, SabliValidationError } from "../errors/index.js";
+import { SabliDatabaseClosedError, SabliStorageError } from "../errors/index.js";
 import type { InsertResult, Query, SearchResult } from "../query/ast.js";
 import { verifyDocument } from "../query/verifier.js";
 import { MemSegment } from "../segment/MemSegment.js";
@@ -15,6 +15,7 @@ import { parseJsonDocument } from "../validation/documents.js";
 import { parseDatabaseOptions, type SabliDatabaseOptions } from "../validation/DatabaseOptionsValidation.js";
 import { parseQuery } from "../validation/queries.js";
 import { DocIdInputGuard } from "../validation/schemas.js";
+import { assertIs } from "../validation/assertValid.js";
 import type { DatabaseLifecycleState } from "./DatabaseLifecycle.js";
 import { isDatabaseOpen } from "./DatabaseLifecycle.js";
 import type { SabliDatabaseStats } from "./DatabaseStats.js";
@@ -421,9 +422,5 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
 }
 
 function parseDocIdInput(input: unknown, operation: string): DocId {
-  const result = DocIdInputGuard.check(input);
-  if (!result.ok) {
-    throw new SabliValidationError(`Invalid ${operation} docId: expected a positive integer.`);
-  }
-  return toDocId(result.value);
+  return toDocId(assertIs(DocIdInputGuard, input, "public", `Invalid ${operation} docId: expected a positive integer.`));
 }

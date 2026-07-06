@@ -10,13 +10,13 @@ import { SortedArrayPostingList, type PostingList } from "../indexes/posting.js"
 import type { QueryExpression, QueryPredicate } from "../query/ast.js";
 import { encodeTermKey } from "./MemSegment.js";
 import type { SegmentMetadata } from "./SegmentMetadata.js";
-import { SabliCorruptionError } from "../errors/index.js";
 import {
   DeleteBitmapFileGuard,
   OffsetTableFileGuard,
   PostingIndexFileGuard,
   type PostingIndexFileInput
 } from "../validation/schemas.js";
+import { assertValid } from "../validation/assertValid.js";
 
 type PostingIndexFile = PostingIndexFileInput;
 
@@ -149,11 +149,7 @@ export class ImmutableSegment {
   private async documentReader(): Promise<DocumentBlockReader> {
     if (this.#documents === undefined) {
       const parsed: unknown = JSON.parse(await readFile(join(this.#root, "docs.offset"), "utf8"));
-      const result = OffsetTableFileGuard.check(parsed);
-      if (!result.ok) {
-        throw new SabliCorruptionError("Invalid document offset table: malformed metadata.");
-      }
-      const table = result.value;
+      const table = assertValid(OffsetTableFileGuard, parsed, "corruption", "Invalid document offset table: malformed metadata.");
       this.#documents = new DocumentBlockReader(join(this.#root, "docs.bin"), table);
     }
     return this.#documents;
@@ -171,11 +167,10 @@ export class ImmutableSegment {
   private async loadDeleteBitmap(): Promise<void> {
     try {
       const parsed: unknown = JSON.parse(await readFile(join(this.#root, "delete.bitmap"), "utf8"));
-      const result = DeleteBitmapFileGuard.check(parsed);
-      if (!result.ok) {
+      if (!DeleteBitmapFileGuard.is(parsed)) {
         return;
       }
-      for (const docId of result.value.deleted) {
+      for (const docId of parsed.deleted) {
         if (Number.isInteger(docId) && docId >= 1) {
           this.#deleted.add(docId);
         }
@@ -197,11 +192,7 @@ export class ImmutableSegment {
   private async postings(): Promise<PostingIndexFile> {
     if (this.#postings === undefined) {
       const parsed: unknown = JSON.parse(await readFile(join(this.#root, "postings.idx"), "utf8"));
-      const result = PostingIndexFileGuard.check(parsed);
-      if (!result.ok) {
-        throw new SabliCorruptionError("Invalid posting index: malformed metadata.");
-      }
-      this.#postings = result.value;
+      this.#postings = assertValid(PostingIndexFileGuard, parsed, "corruption", "Invalid posting index: malformed metadata.");
     }
     return this.#postings;
   }

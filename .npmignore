@@ -3,6 +3,7 @@ coverage/
 .vitest/
 .git/
 .gitignore
+.vscode/
 
 AGENT.md
 CODEX.md

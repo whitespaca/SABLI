@@ -6,6 +6,7 @@ import { writeFileAtomic } from "./AtomicFile.js";
 import { checksum, stableJson } from "./Checksum.js";
 import { SabliCorruptionError } from "../errors/index.js";
 import { DatabaseManifestInputGuard } from "../validation/schemas.js";
+import { assertValid } from "../validation/assertValid.js";
 
 /**
  * Segment entry recorded in the database manifest.
@@ -124,11 +125,7 @@ export class ManifestStore {
  * @throws {SabliCorruptionError} If the manifest is malformed.
  */
 export function parseDatabaseManifest(input: unknown): DatabaseManifest {
-  const result = DatabaseManifestInputGuard.check(input);
-  if (!result.ok) {
-    throw new SabliCorruptionError("Invalid manifest: expected a versioned manifest object.");
-  }
-  const record = result.value;
+  const record = assertValid(DatabaseManifestInputGuard, input, "corruption", "Invalid manifest.");
   const activeWalGeneration = record.activeWalGeneration ?? 1;
   const segments = record.segments.map((segment): ManifestSegmentEntry => ({
     segmentId: toSegmentId(segment.segmentId),
