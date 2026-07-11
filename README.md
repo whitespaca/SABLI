@@ -7,7 +7,7 @@
 
 SABLI is an ESModule-only TypeScript library for indexing and searching unordered schema-less JSON documents. SABLI stands for Segmented Adaptive Bloom-LSM Inverted Index.
 
-Version 1.4.0 adds scope-aware array `elemMatch` queries to the correctness-first embedded database. Predicates inside `elemMatch` are intersected by both document and concrete array-element identity, while ordinary queries keep their existing document-level semantics. The release retains the append-only WAL, immutable segments, strict segment integrity checks, manual compaction, bounded posting cache, and exact raw-document verification.
+Version 1.5.0 adds optional automatic compaction, explicit immutable-segment levels, monotonic manifest generations, and reader-safe obsolete-segment reclamation. The feature is disabled by default. Scope-aware `elemMatch`, atomic update WAL records, strict segment integrity checks, bounded posting caches, and exact raw-document verification remain unchanged.
 
 ## Installation
 
@@ -260,9 +260,34 @@ Compaction rewrites visible documents from immutable segments into a new immutab
 await db.compact();
 ```
 
-The deterministic compaction policy introduced in v1.2 remains deliberately simple: when `compact()` is called, SABLI flushes the current memory segment, reads all visible documents from all immutable segments, writes one compacted replacement segment, rotates to a new WAL generation, and removes unreferenced old segment directories after the manifest swap succeeds.
+Manual compaction remains deliberately simple: when `compact()` is called, SABLI flushes the current memory segment, reads all visible documents from all immutable segments, writes one compacted replacement segment, rotates to a new WAL generation, and retires unreferenced old segment directories after the manifest swap succeeds.
 
-Compaction removes deleted documents and superseded old update versions from future compacted segments. It remains manual in version 1.4.0; no background or automatic compaction is started by the library.
+Compaction removes deleted documents and superseded old update versions from future compacted segments. Manual calls and automatic jobs share one mutation queue and cannot overlap.
+
+## Automatic Compaction
+
+Automatic compaction is optional and disabled by default:
+
+```ts
+const db = await SabliDatabase.open({
+  path: "./data/users.sabli",
+  createIfMissing: true,
+  automaticCompaction: {
+    enabled: true,
+    maxLevelZeroSegments: 4,
+    maxInputSegments: 4,
+    staleRatioThreshold: 0.3,
+    checkIntervalMs: 5_000,
+    maxInputBytes: 268_435_456
+  }
+});
+```
+
+Every new flush writes an explicit L0 segment. The deterministic initial policy first selects the oldest bounded group when a same-level segment count reaches `maxLevelZeroSegments`; L0 groups produce L1, and higher-level groups produce the next bounded level. If no count group is eligible, one old segment whose deleted-document ratio reaches `staleRatioThreshold` may be rewritten. `maxInputSegments` and `maxInputBytes` bound each job. A clean single segment is never selected repeatedly.
+
+Automatic jobs compact immutable disk segments only. They do not flush memory, advance the WAL checkpoint, or rotate the WAL generation. Flush and manual compaction retain their existing checkpoint behavior. Call `await db.waitForMaintenance()` to deterministically drain work that is currently eligible; `close()` cancels scheduled checks, waits for an active job, flushes pending memory, waits for search leases, and then releases storage resources.
+
+Searches acquire one immutable segment-generation lease. A manifest commit publishes the entire replacement segment array at once, and obsolete readers and directories remain available until searches using the old generation finish. Cleanup failures are diagnostic, not manifest corruption, and known-safe obsolete directories are retried during close or startup. See [`examples/automatic-compaction.ts`](./examples/automatic-compaction.ts).
 
 ## Diagnostics
 
@@ -276,7 +301,7 @@ console.dir(stats, { depth: null });
 
 The result includes the database path, open or closed state, manifest version, next document identifier, immutable segment count, active WAL generation, checkpoint sequence, approximate visible and deleted document counts, memory segment document count, derived immutable posting-key and posting-row counts, bounded posting-cache size, capacity, hit, and miss counters, and whether compaction can be called on the current handle.
 
-Version 1.4.0 also reports low-cost immutable-segment integrity and scoped-index diagnostics. These include `validatedImmutableSegmentCount`, `immutableSegmentFormatVersion`, the sorted `immutableSegmentFormatVersions` in use, `legacyElemMatchFallbackSegmentCount`, `loadedDeleteBitmapEntryCount`, `exactSegmentDocumentIdCount`, scoped array/path/term posting key and row counts, and scoped cache size, hit, and miss counters. The values summarize state already validated or loaded while opening segments and do not expose mutable collections or require a full-database scan on each `stats()` call.
+Version 1.5.0 also reports low-cost immutable-segment integrity, scoped-index, manifest-generation, level, and maintenance diagnostics. Maintenance fields include enabled/state, active plan shape, completed and failed automatic job counts, last reason/timestamps/error, per-level segment counts, pending obsolete segments, and the last cleanup error. The values summarize state already maintained in memory and do not expose mutable collections or require a full-database scan on each `stats()` call.
 
 ## Performance Notes
 
@@ -296,7 +321,7 @@ Complement-based and unselective immutable-segment queries use exact physical do
 
 `elemMatch` uses a separate correctness-first scoped posting index. Scoped entries are sorted unique `(Document ID, Scope ID)` pairs, so an AND intersects the concrete element identity as well as the document identity. Equality and path-existence terms use scoped postings, and numeric ranges use inspectable scoped numeric rows. Scoped and ordinary cache keys are distinct. Bloom filters only prune individual scoped terms; independent Bloom hits never prove a same-element conjunction.
 
-Version-1 immutable segments written by SABLI v1.3.1 remain readable. They have no scoped posting file, so `elemMatch` uses conservative visible document candidates and exact raw verification. New flushes write segment metadata version 2 with `scoped-postings.idx`, and compaction naturally upgrades visible legacy documents into the current format.
+Version-1 immutable segments written by SABLI v1.3.1 remain readable. They have no scoped posting file, so `elemMatch` uses conservative visible document candidates and exact raw verification. Version-1 and version-2 metadata deliberately default to L0. New flushes write segment metadata version 3 with an explicit bounded level and `scoped-postings.idx`; compaction naturally upgrades visible legacy documents into the current format. Missing or invalid levels in version-3 metadata are corruption, never legacy inference.
 
 Exact final verification remains part of every search result path. Posting lists, Bloom filters, and the cache only reduce candidate work; SABLI still reads and verifies raw JSON documents before returning matches.
 
@@ -382,6 +407,7 @@ database.sabli/
   LOCK
   CURRENT
   MANIFEST-000001
+  MANIFEST-000002
   WAL-000001.log
   WAL-000002.log
   segments/
@@ -397,7 +423,9 @@ database.sabli/
       delete.bitmap
 ```
 
-`scoped-postings.idx` is mandatory for segment metadata version 2. A version-2 segment with a missing, malformed, unsupported, unsorted, duplicate, or non-physical scoped posting fails with `SabliCorruptionError`; it is never silently opened as a legacy segment.
+`CURRENT` names exactly one active monotonic manifest generation. SABLI writes and syncs the next generation before atomically replacing `CURRENT`; a generated manifest that was never selected remains inactive, and at least the previous generation is retained for inspection and recovery. Missing or malformed active pointers and manifests are controlled corruption failures.
+
+`scoped-postings.idx` is mandatory for segment metadata versions 2 and 3. A current scoped segment with a missing, malformed, unsupported, unsorted, duplicate, or non-physical scoped posting fails with `SabliCorruptionError`; it is never silently opened as a legacy segment.
 
 Inserts, deletes, and updates are appended to the active WAL generation before they are acknowledged in strict durability mode. `flush()` writes the current memory segment to an immutable disk segment, checkpoints the WAL sequence, rotates to a new WAL generation, and updates the manifest atomically.
 
@@ -407,7 +435,7 @@ The default durability mode is `strict`, which asks Node.js to flush WAL appends
 
 Partial trailing WAL records are handled deterministically by stopping at the last valid record. Checksum mismatches are treated as controlled recovery errors.
 
-Checkpointing records the highest WAL sequence already represented by immutable segments. After flush or compaction, new writes go to the next WAL generation. Obsolete WAL generations are not required after a successful checkpoint.
+Checkpointing records the highest WAL sequence already represented by immutable segments. Flush and manual full compaction rotate to a new WAL generation only after their durable manifest state is active. Automatic disk-only compaction preserves the checkpoint and active WAL generation, so it cannot checkpoint unflushed memory writes. A failure before `CURRENT` changes leaves the previous state authoritative; a failure after it changes leaves the new state recoverable even if old WAL or segment cleanup remains.
 
 ## Benchmarks
 
@@ -418,19 +446,20 @@ npm run bench:insert -- --count 1000
 npm run bench:search -- --count 1000 --queries 100 --warmup 10
 npm run bench:reopen -- --count 1000
 npm run bench:compaction -- --count 1000
+npm run bench:automatic-compaction -- --count 1000 --queries 100 --warmup 10
 ```
 
-The scripts generate synthetic JSON documents, use temporary database directories by default, and print elapsed time in English. Pass `--keep` to keep the generated database directory for inspection, or `--path ./bench.sabli` to use a specific database path. Search benchmarks report total query time, average latency, p50, p95, and p99 for ordinary equality, contains, AND, repeated cached search, and scoped `elemMatch` equality/range cases with cold and warm cache coverage.
+The scripts generate synthetic JSON documents, use temporary database directories by default, and print elapsed time in English. Pass `--keep` to keep the generated database directory for inspection, or `--path ./bench.sabli` to use a specific database path. Search benchmarks report total query time, average latency, p50, p95, and p99. The automatic-compaction benchmark compares write modes, accumulated-L0 search, pre/post-maintenance ordinary and `elemMatch` latency, compaction elapsed time, segment count, and database bytes.
 
 Benchmark results depend on hardware, filesystem behavior, Node.js version, durability mode, and active operating system caches. Normal tests only verify benchmark scripts run and do not enforce strict performance thresholds.
 
 ## Current Limitations
 
-Version 1.4.0 includes scope-aware same-element AND/OR matching for one target array scope, legacy segment fallback, scoped posting persistence and caching, manual compaction, WAL generation checkpointing, adaptive document postings, and strict required-file validation. Nested `elemMatch`, child-scope `not`, automatic background compaction, advanced compaction selection, compressed posting encodings, and arbitrary cross-array joins are not implemented.
+Version 1.5.0 includes optional single-job automatic compaction with a small deterministic level policy. It does not implement size-tiered range overlap analysis, worker-thread compaction, process-wide maintenance coordination, or a full RocksDB-compatible level model. Nested `elemMatch`, child-scope `not`, compressed posting encodings, and arbitrary cross-array joins also remain future work.
 
 ## Future Roadmap
 
-- Automatic compaction scheduling and richer compaction selection.
+- Richer size-aware compaction selection and maintenance tooling.
 - More compact posting encodings.
 - Larger-scale lazy loading and cache controls.
 - Nested scoped-array matching and carefully defined scoped negation.

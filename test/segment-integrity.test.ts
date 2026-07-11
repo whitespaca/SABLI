@@ -36,7 +36,8 @@ afterEach(async () => {
 });
 
 async function activeSegmentPath(databasePath: string): Promise<string> {
-  const text = await readFile(join(databasePath, "MANIFEST-000001"), "utf8");
+  const manifestName = (await readFile(join(databasePath, "CURRENT"), "utf8")).trim();
+  const text = await readFile(join(databasePath, manifestName), "utf8");
   const parsed: unknown = JSON.parse(text);
   const manifest = parseDatabaseManifest(parsed);
   const [entry] = manifest.segments;
@@ -88,6 +89,27 @@ async function markActiveSegmentLegacy(databasePath: string, removeScopedPosting
   if (removeScopedPostings) {
     await rm(join(segmentPath, "scoped-postings.idx"));
   }
+  return segmentPath;
+}
+
+async function markActiveSegmentVersion2(databasePath: string): Promise<string> {
+  const segmentPath = await activeSegmentPath(databasePath);
+  const metadataInput: unknown = JSON.parse(await readFile(join(segmentPath, "segment.meta.json"), "utf8"));
+  const metadata = parseSegmentMetadata(metadataInput);
+  const payload = {
+    format: "sabli-segment" as const,
+    version: 2 as const,
+    segmentId: metadata.segmentId,
+    docCount: metadata.docCount,
+    minDocId: metadata.minDocId,
+    maxDocId: metadata.maxDocId,
+    createdAt: metadata.createdAt,
+    bloom: metadata.bloom
+  };
+  await writeFile(join(segmentPath, "segment.meta.json"), JSON.stringify({
+    ...payload,
+    checksum: checksum(stableJson(payload))
+  }));
   return segmentPath;
 }
 
@@ -245,6 +267,36 @@ const structuredSegmentArtifacts = [
 ] as const;
 
 describe("immutable segment file-set validation", () => {
+  it("requires an explicit level in current-format segment metadata", async () => {
+    const { databasePath, segmentPath } = await createClosedSegmentDatabase();
+    const metadataPath = join(segmentPath, "segment.meta.json");
+    const input: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
+      throw new Error("Expected object segment metadata in the test fixture.");
+    }
+    const record = { ...input } as Record<string, unknown>;
+    delete record.level;
+    await writeFile(metadataPath, JSON.stringify(record));
+    expectCorruption(await openFailure(databasePath), segmentPath, "segment.meta.json");
+  });
+
+  it("rejects a current-format segment level above the implementation bound", async () => {
+    const { databasePath, segmentPath } = await createClosedSegmentDatabase();
+    const metadataPath = join(segmentPath, "segment.meta.json");
+    const input: unknown = JSON.parse(await readFile(metadataPath, "utf8"));
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
+      throw new Error("Expected object segment metadata in the test fixture.");
+    }
+    const payload = { ...input } as Record<string, unknown>;
+    delete payload.checksum;
+    const invalidPayload = { ...payload, level: 9 };
+    await writeFile(metadataPath, JSON.stringify({
+      ...invalidPayload,
+      checksum: checksum(stableJson(invalidPayload))
+    }));
+    expectCorruption(await openFailure(databasePath), segmentPath, "segment.meta.json");
+  });
+
   it.each(requiredSegmentArtifacts)("rejects a missing required %s file", async (artifact) => {
     const { databasePath, segmentPath } = await createClosedSegmentDatabase();
     await rm(join(segmentPath, artifact));
@@ -296,6 +348,22 @@ describe("immutable segment file-set validation", () => {
 });
 
 describe("scoped posting persistence compatibility", () => {
+  it("deliberately treats version-2 scoped segments without a level as L0", async () => {
+    const { databasePath } = await createClosedSegmentDatabase();
+    await markActiveSegmentVersion2(databasePath);
+    const legacyLevel = await SabliDatabase.open({ path: databasePath, createIfMissing: false });
+    await expect(legacyLevel.stats()).resolves.toMatchObject({
+      immutableSegmentFormatVersions: [2],
+      segmentCountsByLevel: [{ level: 0, count: 1 }]
+    });
+    await legacyLevel.compact();
+    await expect(legacyLevel.stats()).resolves.toMatchObject({
+      immutableSegmentFormatVersions: [3],
+      segmentCountsByLevel: [{ level: 1, count: 1 }]
+    });
+    await legacyLevel.close();
+  });
+
   const sameElementQuery = {
     where: {
       path: "orders[]",
@@ -356,8 +424,8 @@ describe("scoped posting persistence compatibility", () => {
     expect(await queryDocumentIds(legacy, sameElementQuery)).toEqual([2]);
     const upgradedStats = await legacy.stats();
     expect(upgradedStats).toMatchObject({
-      immutableSegmentFormatVersion: 2,
-      immutableSegmentFormatVersions: [2],
+      immutableSegmentFormatVersion: 3,
+      immutableSegmentFormatVersions: [3],
       legacyElemMatchFallbackSegmentCount: 0
     });
     expect(upgradedStats.immutableScopedArrayPostingCount).toBeGreaterThan(0);
@@ -373,7 +441,7 @@ describe("scoped posting persistence compatibility", () => {
     const reopened = await SabliDatabase.open({ path: databasePath, createIfMissing: false });
     expect(await queryDocumentIds(reopened, sameElementQuery)).toEqual([2]);
     await expect(reopened.stats()).resolves.toMatchObject({
-      immutableSegmentFormatVersions: [2],
+      immutableSegmentFormatVersions: [3],
       legacyElemMatchFallbackSegmentCount: 0
     });
     await reopened.close();
@@ -412,7 +480,7 @@ describe("scoped posting persistence compatibility", () => {
     await mixed.flush();
     await expect(mixed.stats()).resolves.toMatchObject({
       immutableSegmentCount: 2,
-      immutableSegmentFormatVersions: [1, 2],
+      immutableSegmentFormatVersions: [1, 3],
       legacyElemMatchFallbackSegmentCount: 1
     });
     expect(await queryDocumentIds(mixed, sameElementQuery)).toEqual([1, 2]);
@@ -421,7 +489,7 @@ describe("scoped posting persistence compatibility", () => {
     expect(await queryDocumentIds(mixed, sameElementQuery)).toEqual([1, 2]);
     await expect(mixed.stats()).resolves.toMatchObject({
       immutableSegmentCount: 1,
-      immutableSegmentFormatVersions: [2],
+      immutableSegmentFormatVersions: [3],
       legacyElemMatchFallbackSegmentCount: 0
     });
     await mixed.close();
@@ -546,7 +614,7 @@ describe("delete bitmap corruption handling", () => {
     await expect(populated.stats()).resolves.toMatchObject({
       approximateDeletedDocumentCount: 1,
       validatedImmutableSegmentCount: 1,
-      immutableSegmentFormatVersion: 2,
+      immutableSegmentFormatVersion: 3,
       loadedDeleteBitmapEntryCount: 1,
       exactSegmentDocumentIdCount: 3
     });

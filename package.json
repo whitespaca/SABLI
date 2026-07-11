@@ -1,6 +1,6 @@
 {
   "name": "sablidb",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Segmented Adaptive Bloom-LSM Inverted Index for JSON documents.",
   "type": "module",
   "private": false,
@@ -30,6 +30,7 @@
     "bench:search": "npm run bench:build && node dist-bench/bench/search.js",
     "bench:reopen": "npm run bench:build && node dist-bench/bench/reopen.js",
     "bench:compaction": "npm run bench:build && node dist-bench/bench/compaction.js",
+    "bench:automatic-compaction": "npm run bench:build && node dist-bench/bench/automatic-compaction.js",
     "examples:check": "tsc -p tsconfig.examples.json --noEmit",
     "test": "npm run build && vitest run",
     "test:watch": "vitest",

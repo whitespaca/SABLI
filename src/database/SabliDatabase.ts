@@ -19,6 +19,16 @@ import { assertIs } from "../validation/assertValid.js";
 import type { DatabaseLifecycleState } from "./DatabaseLifecycle.js";
 import { isDatabaseOpen } from "./DatabaseLifecycle.js";
 import type { SabliDatabaseStats } from "./DatabaseStats.js";
+import { AsyncMutex } from "../maintenance/AsyncMutex.js";
+import {
+  DefaultCompactionPolicy,
+  MAX_SEGMENT_LEVEL,
+  type CompactionPlan,
+  type CompactionSegmentInfo
+} from "../maintenance/CompactionPolicy.js";
+import { MaintenanceScheduler, type MaintenanceRunResult } from "../maintenance/MaintenanceScheduler.js";
+import { SegmentSnapshotManager } from "../maintenance/SegmentSnapshotManager.js";
+import { triggerCompactionFailurePoint } from "../maintenance/CompactionFailureInjection.js";
 
 /**
  * Persistent embedded SABLI database.
@@ -30,11 +40,18 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   #wal: WalStore;
   readonly #segmentStore: SegmentStore;
   readonly #lock: FileLock;
-  readonly #segments: ImmutableSegment[];
+  #segments: readonly ImmutableSegment[];
   #manifest: DatabaseManifest;
   #mem: MemSegment<TDocument>;
   #lifecycle: DatabaseLifecycleState = "open";
   #nextWalSequence: number;
+  readonly #mutationMutex = new AsyncMutex();
+  readonly #compactionPolicy = new DefaultCompactionPolicy();
+  readonly #activeCompactionSegmentIds = new Set<number>();
+  readonly #segmentSnapshots: SegmentSnapshotManager;
+  readonly #maintenance: MaintenanceScheduler;
+  #lastCleanupError: string | null = null;
+  #closePromise: Promise<void> | undefined;
 
   private constructor(args: {
     readonly options: SabliDatabaseOptions;
@@ -58,6 +75,28 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
     this.#segments = args.segments;
     this.#mem = args.mem;
     this.#nextWalSequence = args.nextWalSequence;
+    this.#segmentSnapshots = new SegmentSnapshotManager(
+      args.segments,
+      async (obsolete) => {
+        const activePaths = new Set(this.#manifest.segments.map(({ path }) => path));
+        const removable = obsolete.filter((segment) => !activePaths.has(segment.path));
+        if (removable.length !== obsolete.length) {
+          throw new SabliStorageError("Cannot reclaim a segment still referenced by the active manifest.");
+        }
+        await triggerCompactionFailurePoint("before-obsolete-cleanup");
+        await Promise.all(removable.map((segment) => segment.close()));
+        await triggerCompactionFailurePoint("during-obsolete-cleanup");
+        await this.#segmentStore.removeSegments(removable.map(({ path }) => path));
+      },
+      (error) => {
+        this.#lastCleanupError = error instanceof Error ? error.message : "Unknown obsolete segment cleanup failure.";
+      }
+    );
+    this.#maintenance = new MaintenanceScheduler(
+      this.#options.automaticCompaction.enabled,
+      this.#options.automaticCompaction.checkIntervalMs,
+      () => this.runAutomaticMaintenance()
+    );
   }
 
   /**
@@ -99,6 +138,7 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
         segments.push(await segmentStore.open(entry));
       }
       await segmentStore.cleanupTemporarySegments();
+      await segmentStore.cleanupObsoleteSegments(new Set(manifest.segments.map(({ path }) => path)));
       const wal = new WalStore(directory.walPath(manifest.activeWalGeneration));
       await wal.ensure();
       const replay = await wal.replay(manifest.flushedWalSequence);
@@ -135,6 +175,7 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
         mem,
         nextWalSequence: Math.max(replay.lastSequence + 1, manifest.flushedWalSequence + 1)
       });
+      opened.#maintenance.start();
       return opened;
     } catch (error) {
       await Promise.all(segments.map((segment) => segment.close()));
@@ -154,24 +195,27 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   public async insert(document: unknown): Promise<InsertResult> {
     this.assertOpen();
     const parsed = parseJsonDocument(document) as TDocument;
-    const docId = this.#manifest.nextDocId;
-    const sequence = this.#nextWalSequence;
-    const record: WalRecord = {
-      format: "sabli-wal-record",
-      version: 1,
-      sequence,
-      type: "insert",
-      docId,
-      document: parsed
-    };
-    await this.#wal.append(record, this.#options.durability === "strict");
-    const entryCount = this.#mem.insertWithDocId(docId, parsed, sequence);
-    this.#nextWalSequence += 1;
-    this.#manifest = { ...this.#manifest, nextDocId: toDocId(Number(docId) + 1) };
-    if (this.#mem.documentCount >= this.#options.memSegmentMaxDocuments) {
-      await this.flush();
-    }
-    return { docId, entryCount };
+    return this.#mutationMutex.runExclusive(async () => {
+      this.assertOpen();
+      const docId = this.#manifest.nextDocId;
+      const sequence = this.#nextWalSequence;
+      const record: WalRecord = {
+        format: "sabli-wal-record",
+        version: 1,
+        sequence,
+        type: "insert",
+        docId,
+        document: parsed
+      };
+      await this.#wal.append(record, this.#options.durability === "strict");
+      const entryCount = this.#mem.insertWithDocId(docId, parsed, sequence);
+      this.#nextWalSequence += 1;
+      this.#manifest = { ...this.#manifest, nextDocId: toDocId(Number(docId) + 1) };
+      if (this.#mem.documentCount >= this.#options.memSegmentMaxDocuments) {
+        await this.flushInternal();
+      }
+      return { docId, entryCount };
+    });
   }
 
   /**
@@ -184,17 +228,20 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   public async delete(docId: unknown): Promise<void> {
     this.assertOpen();
     const parsedDocId = parseDocIdInput(docId, "delete");
-    const sequence = this.#nextWalSequence;
-    const record: WalRecord = {
-      format: "sabli-wal-record",
-      version: 1,
-      sequence,
-      type: "delete",
-      docId: parsedDocId
-    };
-    await this.#wal.append(record, this.#options.durability === "strict");
-    await this.applyDelete(parsedDocId, sequence);
-    this.#nextWalSequence += 1;
+    await this.#mutationMutex.runExclusive(async () => {
+      this.assertOpen();
+      const sequence = this.#nextWalSequence;
+      const record: WalRecord = {
+        format: "sabli-wal-record",
+        version: 1,
+        sequence,
+        type: "delete",
+        docId: parsedDocId
+      };
+      await this.#wal.append(record, this.#options.durability === "strict");
+      await this.applyDelete(parsedDocId, sequence);
+      this.#nextWalSequence += 1;
+    });
   }
 
   /**
@@ -210,30 +257,33 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   public async update(docId: unknown, document: unknown): Promise<InsertResult> {
     this.assertOpen();
     const oldDocId = parseDocIdInput(docId, "update");
-    if (!(await this.isVisible(oldDocId))) {
-      throw new SabliStorageError("Cannot update document: docId is not visible.");
-    }
     const parsed = parseJsonDocument(document) as TDocument;
-    const sequence = this.#nextWalSequence;
-    const newDocId = this.#manifest.nextDocId;
-    const record: WalRecord = {
-      format: "sabli-wal-record",
-      version: 1,
-      sequence,
-      type: "update",
-      oldDocId,
-      newDocId,
-      document: parsed
-    };
-    await this.#wal.append(record, this.#options.durability === "strict");
-    await this.applyDelete(oldDocId, sequence);
-    const entryCount = this.#mem.insertWithDocId(newDocId, parsed, sequence);
-    this.#nextWalSequence += 1;
-    this.#manifest = { ...this.#manifest, nextDocId: toDocId(Number(newDocId) + 1) };
-    if (this.#mem.documentCount >= this.#options.memSegmentMaxDocuments) {
-      await this.flush();
-    }
-    return { docId: newDocId, entryCount };
+    return this.#mutationMutex.runExclusive(async () => {
+      this.assertOpen();
+      if (!(await this.isVisible(oldDocId))) {
+        throw new SabliStorageError("Cannot update document: docId is not visible.");
+      }
+      const sequence = this.#nextWalSequence;
+      const newDocId = this.#manifest.nextDocId;
+      const record: WalRecord = {
+        format: "sabli-wal-record",
+        version: 1,
+        sequence,
+        type: "update",
+        oldDocId,
+        newDocId,
+        document: parsed
+      };
+      await this.#wal.append(record, this.#options.durability === "strict");
+      await this.applyDelete(oldDocId, sequence);
+      const entryCount = this.#mem.insertWithDocId(newDocId, parsed, sequence);
+      this.#nextWalSequence += 1;
+      this.#manifest = { ...this.#manifest, nextDocId: toDocId(Number(newDocId) + 1) };
+      if (this.#mem.documentCount >= this.#options.memSegmentMaxDocuments) {
+        await this.flushInternal();
+      }
+      return { docId: newDocId, entryCount };
+    });
   }
 
   /**
@@ -246,21 +296,26 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   public async search(query: unknown): Promise<SearchResult<TDocument>> {
     this.assertOpen();
     const parsed: Query = parseQuery(query);
+    const lease = this.#segmentSnapshots.acquire();
     const documents: { readonly docId: DocId; readonly document: TDocument }[] = [];
-    for (const docId of this.#mem.candidates(parsed.where).toArray()) {
-      const document = this.#mem.getDocument(docId);
-      if (document !== undefined && verifyDocument(document, parsed)) {
-        documents.push({ docId, document });
-      }
-    }
-    for (const segment of this.#segments) {
-      const candidates = await segment.candidates(parsed.where);
-      for (const docId of candidates.toArray()) {
-        const document = await segment.getDocument(docId);
+    try {
+      for (const docId of this.#mem.candidates(parsed.where).toArray()) {
+        const document = this.#mem.getDocument(docId);
         if (document !== undefined && verifyDocument(document, parsed)) {
-          documents.push({ docId, document: document as TDocument });
+          documents.push({ docId, document });
         }
       }
+      for (const segment of lease.segments) {
+        const candidates = await segment.candidates(parsed.where);
+        for (const docId of candidates.toArray()) {
+          const document = await segment.getDocument(docId);
+          if (document !== undefined && verifyDocument(document, parsed)) {
+            documents.push({ docId, document: document as TDocument });
+          }
+        }
+      }
+    } finally {
+      await lease.release();
     }
     documents.sort((left, right) => Number(left.docId) - Number(right.docId));
     return { documents, count: documents.length };
@@ -282,9 +337,14 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
     const segmentFormatVersions = [...new Set(this.#segments.map((segment) => segment.metadata.version))]
       .sort((left, right) => left - right);
     const memLive = this.#mem.documentCount;
+    const maintenance = this.#maintenance.diagnostics();
+    const levelCounts = new Map<number, number>();
+    for (const segment of this.#segments) {
+      levelCounts.set(segment.metadata.level, (levelCounts.get(segment.metadata.level) ?? 0) + 1);
+    }
     return {
       path: this.#directory.paths.root,
-      state: isDatabaseOpen(this.#lifecycle) ? "open" : "closed",
+      state: this.#lifecycle,
       manifestVersion: this.#manifest.version,
       nextDocId: this.#manifest.nextDocId,
       immutableSegmentCount: this.#manifest.segments.length,
@@ -316,7 +376,23 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
       postingCacheMisses: cacheStats.reduce((sum, stats) => sum + stats.misses, 0),
       scopedPostingCacheSize: cacheStats.reduce((sum, stats) => sum + stats.scopedSize, 0),
       scopedPostingCacheHits: cacheStats.reduce((sum, stats) => sum + stats.scopedHits, 0),
-      scopedPostingCacheMisses: cacheStats.reduce((sum, stats) => sum + stats.scopedMisses, 0)
+      scopedPostingCacheMisses: cacheStats.reduce((sum, stats) => sum + stats.scopedMisses, 0),
+      manifestGeneration: this.#manifestStore.activeGeneration,
+      automaticCompactionEnabled: this.#options.automaticCompaction.enabled,
+      maintenanceState: maintenance.state,
+      activeCompactionInputSegmentCount: maintenance.activeInputSegmentCount,
+      activeCompactionOutputLevel: maintenance.activeOutputLevel,
+      completedAutomaticCompactionCount: maintenance.completedCount,
+      failedAutomaticCompactionCount: maintenance.failedCount,
+      lastAutomaticCompactionReason: maintenance.lastReason,
+      lastAutomaticCompactionStartTime: maintenance.lastStartTime,
+      lastAutomaticCompactionEndTime: maintenance.lastEndTime,
+      lastMaintenanceError: maintenance.lastError,
+      segmentCountsByLevel: Object.freeze([...levelCounts.entries()]
+        .sort(([left], [right]) => left - right)
+        .map(([level, count]) => Object.freeze({ level, count }))),
+      pendingObsoleteSegmentCount: this.#segmentSnapshots.pendingObsoleteSegmentCount,
+      lastObsoleteCleanupError: this.#lastCleanupError
     };
   }
 
@@ -327,14 +403,21 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
    */
   public async flush(): Promise<void> {
     this.assertOpen();
+    await this.#mutationMutex.runExclusive(async () => {
+      this.assertOpen();
+      await this.flushInternal();
+    });
+  }
+
+  private async flushInternal(): Promise<void> {
     if (this.#mem.documentCount === 0) {
-      await this.#manifestStore.write(this.#manifest);
       return;
     }
     const segmentId = this.#manifest.nextSegmentId;
     const snapshot = this.#mem.snapshot();
-    const entry = await this.#segmentStore.writer.write(segmentId, snapshot);
-    this.#manifest = {
+    const entry = await this.#segmentStore.writer.write(segmentId, snapshot, { level: 0 });
+    const opened = await this.#segmentStore.open(entry);
+    const nextManifest: DatabaseManifest = {
       format: "sabli-manifest",
       version: 1,
       nextDocId: this.#manifest.nextDocId,
@@ -344,10 +427,20 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
       activeWalGeneration: this.#manifest.activeWalGeneration + 1,
       checksum: ""
     };
-    await this.#manifestStore.write(this.#manifest);
-    this.#segments.push(await this.#segmentStore.open(entry));
+    try {
+      this.#manifest = await this.#manifestStore.write(nextManifest);
+    } catch (error) {
+      await opened.close();
+      await this.#segmentStore.removeSegments([entry.path]).catch(() => undefined);
+      throw error;
+    }
+    const segments = Object.freeze([...this.#segments, opened]
+      .sort((left, right) => Number(left.metadata.segmentId) - Number(right.metadata.segmentId)));
+    this.#segments = segments;
+    await this.#segmentSnapshots.replace(segments, []);
     this.#mem.clear();
     await this.rotateWalAfterCheckpoint(this.#manifest.activeWalGeneration - 1);
+    this.#maintenance.notify();
   }
 
   /**
@@ -360,57 +453,55 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   public async compact(options?: { readonly force?: boolean }): Promise<void> {
     this.assertOpen();
     void options;
-    await this.flush();
-    const liveDocuments: { readonly docId: DocId; readonly document: TDocument }[] = [];
-    for (const segment of this.#segments) {
-      for (const row of await segment.readLiveDocuments()) {
-        liveDocuments.push({ docId: row.docId, document: row.document as TDocument });
-      }
-    }
-    liveDocuments.sort((left, right) => Number(left.docId) - Number(right.docId));
-
-    const segmentId = this.#manifest.nextSegmentId;
-    const entry = await this.#segmentStore.writer.write(segmentId, {
-      documents: liveDocuments,
-      lastWalSequence: this.#manifest.flushedWalSequence
+    await this.#mutationMutex.runExclusive(async () => {
+      this.assertOpen();
+      await this.flushInternal();
+      const outputLevel = Math.min(
+        MAX_SEGMENT_LEVEL,
+        Math.max(0, ...this.#segments.map((segment) => segment.metadata.level)) + 1
+      );
+      const plan = createManualCompactionPlan(this.#segments, outputLevel);
+      await this.executeCompactionPlan(plan, true);
     });
-    const oldSegments = [...this.#segments];
-    this.#manifest = {
-      format: "sabli-manifest",
-      version: 1,
-      nextDocId: this.#manifest.nextDocId,
-      nextSegmentId: toSegmentId(Number(segmentId) + 1),
-      segments: liveDocuments.length === 0 ? [] : [entry],
-      flushedWalSequence: this.#manifest.flushedWalSequence,
-      activeWalGeneration: this.#manifest.activeWalGeneration + 1,
-      checksum: ""
-    };
-    await this.#manifestStore.write(this.#manifest);
+  }
 
-    for (const segment of oldSegments) {
-      await segment.close();
-    }
-    this.#segments.length = 0;
-    if (liveDocuments.length > 0) {
-      this.#segments.push(await this.#segmentStore.open(entry));
-    }
-    await this.rotateWalAfterCheckpoint(this.#manifest.activeWalGeneration - 1);
-    await this.#segmentStore.cleanupObsoleteSegments(new Set(this.#manifest.segments.map((segment) => segment.path)));
+  /**
+   * Runs all automatic maintenance currently eligible under the configured policy.
+   *
+   * @remarks The method is a no-op when automatic compaction is disabled. It is
+   * also used by deterministic applications and tests instead of timing sleeps.
+   */
+  public async waitForMaintenance(): Promise<void> {
+    this.assertOpen();
+    await this.#maintenance.waitForMaintenance();
   }
 
   /**
    * Closes the database after flushing pending writes and releasing the lock.
    */
-  public async close(): Promise<void> {
-    if (!isDatabaseOpen(this.#lifecycle)) {
-      return;
+  public close(): Promise<void> {
+    if (this.#lifecycle === "closed") {
+      return Promise.resolve();
     }
-    await this.flush();
-    for (const segment of this.#segments) {
-      await segment.close();
+    if (this.#closePromise !== undefined) {
+      return this.#closePromise;
     }
-    await this.#lock.release();
-    this.#lifecycle = "closed";
+    this.#lifecycle = "closing";
+    this.#closePromise = this.closeInternal();
+    return this.#closePromise;
+  }
+
+  private async closeInternal(): Promise<void> {
+    await this.#maintenance.close();
+    await this.#mutationMutex.runExclusive(async () => {
+      await this.flushInternal();
+      await this.#segmentSnapshots.waitForNoReaders();
+      await this.#segmentSnapshots.allowCleanup();
+      await this.#segmentSnapshots.drain();
+      await Promise.all(this.#segments.map((segment) => segment.close()));
+      await this.#lock.release();
+      this.#lifecycle = "closed";
+    });
   }
 
   /**
@@ -423,6 +514,122 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
   private assertOpen(): void {
     if (!isDatabaseOpen(this.#lifecycle)) {
       throw new SabliDatabaseClosedError("SABLI database is closed.");
+    }
+  }
+
+  private async runAutomaticMaintenance(): Promise<MaintenanceRunResult> {
+    if (!isDatabaseOpen(this.#lifecycle)) {
+      return { compacted: false };
+    }
+    return this.#mutationMutex.runExclusive(async () => {
+      if (!isDatabaseOpen(this.#lifecycle)) {
+        return { compacted: false };
+      }
+      const plan = this.#compactionPolicy.select(
+        this.#segments.map((segment) => segmentInfo(segment)),
+        {
+          ...this.#options.automaticCompaction,
+          activeSegmentIds: this.#activeCompactionSegmentIds
+        }
+      );
+      if (plan === null) {
+        return { compacted: false };
+      }
+      this.#maintenance.reportActivePlan(plan.inputSegmentIds.length, plan.outputLevel, plan.reason);
+      await this.executeCompactionPlan(plan, false);
+      return {
+        compacted: true,
+        reason: plan.reason,
+        inputSegmentCount: plan.inputSegmentIds.length,
+        outputLevel: plan.outputLevel
+      };
+    });
+  }
+
+  private async executeCompactionPlan(plan: CompactionPlan, rotateWal: boolean): Promise<void> {
+    const inputIds = new Set(plan.inputSegmentIds.map(Number));
+    const inputs = this.#segments.filter((segment) => inputIds.has(Number(segment.metadata.segmentId)));
+    if (inputs.length !== plan.inputSegmentIds.length) {
+      throw new SabliStorageError("Compaction plan references a segment that is no longer active.");
+    }
+    for (const segmentId of inputIds) {
+      if (this.#activeCompactionSegmentIds.has(segmentId)) {
+        throw new SabliStorageError("Compaction plan references an already active segment.");
+      }
+      this.#activeCompactionSegmentIds.add(segmentId);
+    }
+
+    let output: ImmutableSegment | undefined;
+    let outputPath: string | undefined;
+    let committed = false;
+    try {
+      await triggerCompactionFailurePoint("after-plan-selection");
+      const liveDocuments: { readonly docId: DocId; readonly document: TDocument }[] = [];
+      for (const segment of inputs) {
+        for (const row of await segment.readLiveDocuments()) {
+          liveDocuments.push({ docId: row.docId, document: row.document as TDocument });
+        }
+      }
+      liveDocuments.sort((left, right) => Number(left.docId) - Number(right.docId));
+
+      const segmentId = this.#manifest.nextSegmentId;
+      const entry = await this.#segmentStore.writer.write(segmentId, {
+        documents: liveDocuments,
+        lastWalSequence: this.#manifest.flushedWalSequence
+      }, { level: plan.outputLevel });
+      outputPath = entry.path;
+      await triggerCompactionFailurePoint("after-output-written");
+      output = await this.#segmentStore.open(entry);
+      await triggerCompactionFailurePoint("after-output-validation");
+
+      const retainedEntries = this.#manifest.segments.filter(({ segmentId: activeId }) => !inputIds.has(Number(activeId)));
+      const nextEntries = liveDocuments.length === 0
+        ? retainedEntries
+        : [...retainedEntries, entry].sort((left, right) => Number(left.segmentId) - Number(right.segmentId));
+      const previousWalGeneration = this.#manifest.activeWalGeneration;
+      const nextManifest: DatabaseManifest = {
+        format: "sabli-manifest",
+        version: 1,
+        nextDocId: this.#manifest.nextDocId,
+        nextSegmentId: toSegmentId(Number(segmentId) + 1),
+        segments: nextEntries,
+        flushedWalSequence: this.#manifest.flushedWalSequence,
+        activeWalGeneration: rotateWal ? previousWalGeneration + 1 : previousWalGeneration,
+        checksum: ""
+      };
+      await triggerCompactionFailurePoint("before-manifest-write");
+      this.#manifest = await this.#manifestStore.write(nextManifest, {
+        afterGenerationWrite: () => triggerCompactionFailurePoint("after-manifest-generation-write")
+      });
+      committed = true;
+      if (rotateWal) {
+        await this.rotateWalAfterCheckpoint(previousWalGeneration);
+      }
+
+      const retainedSegments = this.#segments.filter((segment) => !inputIds.has(Number(segment.metadata.segmentId)));
+      const nextSegments = Object.freeze((liveDocuments.length === 0
+        ? retainedSegments
+        : [...retainedSegments, output])
+        .sort((left, right) => Number(left.metadata.segmentId) - Number(right.metadata.segmentId)));
+      const obsolete = liveDocuments.length === 0 ? [...inputs, output] : inputs;
+      this.#segments = nextSegments;
+      await this.#segmentSnapshots.replace(nextSegments, obsolete, true);
+      await triggerCompactionFailurePoint("after-current-swap");
+      await this.#segmentSnapshots.allowCleanup();
+    } catch (error) {
+      if (!committed && output !== undefined) {
+        await output.close();
+      }
+      if (!committed && outputPath !== undefined) {
+        await this.#segmentStore.removeSegments([outputPath]).catch((cleanupError: unknown) => {
+          this.#lastCleanupError = cleanupError instanceof Error ? cleanupError.message : "Unknown failed-output cleanup error.";
+        });
+      }
+      throw error;
+    } finally {
+      for (const segmentId of inputIds) {
+        this.#activeCompactionSegmentIds.delete(segmentId);
+      }
     }
   }
 
@@ -454,4 +661,34 @@ export class SabliDatabase<TDocument extends JsonObject = JsonObject> {
 
 function parseDocIdInput(input: unknown, operation: string): DocId {
   return toDocId(assertIs(DocIdInputGuard, input, "public", `Invalid ${operation} docId: expected a positive integer.`));
+}
+
+function segmentInfo(segment: ImmutableSegment): CompactionSegmentInfo {
+  return {
+    segmentId: segment.metadata.segmentId,
+    level: segment.metadata.level,
+    createdAt: segment.metadata.createdAt,
+    documentCount: segment.documentCount,
+    liveDocumentCount: segment.liveDocumentCount,
+    deletedDocumentCount: segment.deletedDocumentCount,
+    estimatedBytes: segment.estimatedByteSize
+  };
+}
+
+function createManualCompactionPlan(
+  segments: readonly ImmutableSegment[],
+  outputLevel: number
+): CompactionPlan {
+  const infos = segments.map(segmentInfo);
+  const documentCount = infos.reduce((sum, segment) => sum + segment.documentCount, 0);
+  const liveCount = infos.reduce((sum, segment) => sum + segment.liveDocumentCount, 0);
+  return {
+    inputSegmentIds: Object.freeze(infos.map(({ segmentId }) => segmentId)),
+    outputLevel,
+    reason: "manual-full-compaction",
+    estimatedInputDocumentCount: documentCount,
+    estimatedLiveDocumentCount: liveCount,
+    estimatedDeletedRatio: documentCount === 0 ? 0 : (documentCount - liveCount) / documentCount,
+    estimatedInputBytes: infos.reduce((sum, segment) => sum + segment.estimatedBytes, 0)
+  };
 }

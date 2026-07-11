@@ -61,7 +61,7 @@ export class SegmentStore {
     const entries = await readdir(segmentsRoot, { withFileTypes: true }).catch(() => []);
     await Promise.all(
       entries
-        .filter((entry) => entry.isDirectory() && entry.name.endsWith(".tmp"))
+        .filter((entry) => entry.isDirectory() && /^seg-\d{6,}\.tmp$/.test(entry.name))
         .map((entry) => rm(join(segmentsRoot, entry.name), { recursive: true, force: true }))
     );
   }
@@ -76,8 +76,23 @@ export class SegmentStore {
     const entries = await readdir(segmentsRoot, { withFileTypes: true }).catch(() => []);
     await Promise.all(
       entries
-        .filter((entry) => entry.isDirectory() && entry.name.startsWith("seg-") && !livePaths.has(`segments/${entry.name}`))
+        .filter((entry) => entry.isDirectory() && /^seg-\d{6,}$/.test(entry.name) && !livePaths.has(`segments/${entry.name}`))
         .map((entry) => rm(join(segmentsRoot, entry.name), { recursive: true, force: true }))
     );
+  }
+
+  /**
+   * Removes only explicitly identified segment directories after manifest
+   * removal and reader-lease release.
+   *
+   * @param paths - Validated manifest-relative segment directory paths.
+   */
+  public async removeSegments(paths: readonly string[]): Promise<void> {
+    for (const path of paths) {
+      if (!/^segments\/seg-\d{6,}$/.test(path)) {
+        throw new SabliCorruptionError(`Refusing to remove unrecognized obsolete segment path ${path}.`);
+      }
+    }
+    await Promise.all(paths.map((path) => rm(join(this.#root, path), { recursive: true, force: true })));
   }
 }

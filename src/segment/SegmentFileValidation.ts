@@ -63,6 +63,8 @@ export interface ValidatedSegmentFileSet {
   readonly scopedPostingIndex?: ScopedPostingIndexFileInput;
   /** Validated visibility-critical delete bitmap. */
   readonly deleteBitmap: DeleteBitmapFileInput;
+  /** Total bytes across the validated required segment artifacts. */
+  readonly totalByteSize: number;
 }
 
 /**
@@ -85,13 +87,13 @@ export async function validateSegmentFileSet(
     );
   }
 
-  await requireRegularFile(root, segment, "segment.meta.json");
+  let totalByteSize = await requireRegularFile(root, segment, "segment.meta.json");
   const metadataInput = await readJsonArtifact(root, segment, "segment.meta.json");
   const metadata = validateArtifact(segment, "segment.meta.json", () => parseSegmentMetadata(metadataInput));
   validateManifestExpectations(segment, metadata, options);
 
   let documentBlockSize = 0;
-  const requiredArtifacts: readonly SegmentArtifactName[] = metadata.version === 2
+  const requiredArtifacts: readonly SegmentArtifactName[] = metadata.version >= 2
     ? [...COMMON_SEGMENT_ARTIFACTS, SCOPED_POSTING_ARTIFACT]
     : COMMON_SEGMENT_ARTIFACTS;
   for (const artifact of requiredArtifacts) {
@@ -99,6 +101,7 @@ export async function validateSegmentFileSet(
       continue;
     }
     const size = await requireRegularFile(root, segment, artifact);
+    totalByteSize += size;
     if (artifact === "docs.bin") {
       documentBlockSize = size;
     }
@@ -158,7 +161,7 @@ export async function validateSegmentFileSet(
   validatePostingIndex(segment, postingIndex, physicalDocIds);
 
   let scopedPostingIndex: ScopedPostingIndexFileInput | undefined;
-  if (metadata.version === 2) {
+  if (metadata.version >= 2) {
     const scopedPostingInput = await readJsonArtifact(root, segment, SCOPED_POSTING_ARTIFACT);
     scopedPostingIndex = validateArtifact(segment, SCOPED_POSTING_ARTIFACT, () =>
       assertIs(
@@ -198,7 +201,8 @@ export async function validateSegmentFileSet(
     offsetTable,
     postingIndex,
     ...(scopedPostingIndex === undefined ? {} : { scopedPostingIndex }),
-    deleteBitmap
+    deleteBitmap,
+    totalByteSize
   };
 }
 

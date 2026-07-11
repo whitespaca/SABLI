@@ -6,13 +6,13 @@ import type { DocId } from "../types/json.js";
  * @remarks
  * These values are intended for observability, tests, and operational checks.
  * They are approximate where noted because deletes and superseded versions may
- * remain physically present until manual compaction rewrites segments.
+ * remain physically present until manual or automatic compaction rewrites segments.
  */
 export interface SabliDatabaseStats {
   /** Database root directory path. */
   readonly path: string;
   /** Current lifecycle state for this handle. */
-  readonly state: "open" | "closed";
+  readonly state: "open" | "closing" | "closed";
   /** Active manifest format version. */
   readonly manifestVersion: number;
   /** Next document identifier that will be assigned to a new insert. */
@@ -77,4 +77,32 @@ export interface SabliDatabaseStats {
   readonly scopedPostingCacheHits: number;
   /** Number of missed scoped posting cache lookups. */
   readonly scopedPostingCacheMisses: number;
+  /** Active monotonic manifest filename generation. */
+  readonly manifestGeneration: number;
+  /** Whether automatic background compaction is enabled. */
+  readonly automaticCompactionEnabled: boolean;
+  /** Current automatic maintenance scheduler state. */
+  readonly maintenanceState: "idle" | "scheduled" | "running" | "closing" | "failed";
+  /** Input segment count for the active automatic compaction. */
+  readonly activeCompactionInputSegmentCount: number;
+  /** Output level for the active automatic compaction. */
+  readonly activeCompactionOutputLevel: number | null;
+  /** Successfully completed automatic compaction jobs. */
+  readonly completedAutomaticCompactionCount: number;
+  /** Failed automatic compaction jobs. */
+  readonly failedAutomaticCompactionCount: number;
+  /** Last automatic compaction selection reason. */
+  readonly lastAutomaticCompactionReason: string | null;
+  /** ISO start timestamp for the most recent maintenance evaluation. */
+  readonly lastAutomaticCompactionStartTime: string | null;
+  /** ISO end timestamp for the most recent maintenance evaluation. */
+  readonly lastAutomaticCompactionEndTime: string | null;
+  /** Stable English summary for the last background maintenance failure. */
+  readonly lastMaintenanceError: string | null;
+  /** Immutable segment counts grouped by level. */
+  readonly segmentCountsByLevel: readonly { readonly level: number; readonly count: number }[];
+  /** Obsolete segment readers waiting for active search leases or cleanup retry. */
+  readonly pendingObsoleteSegmentCount: number;
+  /** Last obsolete-file cleanup error summary. */
+  readonly lastObsoleteCleanupError: string | null;
 }

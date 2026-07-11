@@ -1,4 +1,4 @@
-import { rename, writeFile } from "node:fs/promises";
+import { open, rename, rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
@@ -16,9 +16,16 @@ export async function writeFileAtomic(path: string, data: string | Uint8Array): 
   await mkdir(directory, { recursive: true });
   const temporary = join(directory, `.tmp-${randomUUID()}`);
   try {
-    await writeFile(temporary, data);
+    const handle = await open(temporary, "wx");
+    try {
+      await handle.writeFile(data);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
     await rename(temporary, path);
   } catch (error) {
+    await rm(temporary, { force: true }).catch(() => undefined);
     throw new SabliStorageError(`Failed to atomically replace file ${path}.`, { cause: error });
   }
 }

@@ -8,7 +8,9 @@ export interface SegmentMetadata {
   /** Segment metadata format marker. */
   readonly format: "sabli-segment";
   /** Segment metadata version. */
-  readonly version: 1 | 2;
+  readonly version: 1 | 2 | 3;
+  /** Deterministic level in the immutable segment lifecycle. */
+  readonly level: number;
   /** Segment identifier. */
   readonly segmentId: SegmentId;
   /** Number of documents in the segment. */

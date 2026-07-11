@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.5.0 - Automatic Compaction And Levelled Segment Lifecycle
+
+- Added optional, disabled-by-default automatic compaction with validated bounded controls and a deterministic oldest-first same-level/stale-segment policy.
+- Added segment metadata version 3 with explicit L0-L8 levels while deliberately treating known version-1 and version-2 segments as legacy L0 inputs.
+- Serialized flush, manual compaction, automatic compaction, mutations, and close through one async coordination primitive while preserving disk-only automatic maintenance.
+- Added monotonic `MANIFEST-NNNNNN` generations, durable generation writes, atomic `CURRENT` replacement, and controlled active-pointer corruption handling.
+- Added immutable search-generation leases, atomic segment-array publication, deferred obsolete-reader reclamation, safe known-path cleanup, and cleanup diagnostics.
+- Added a bounded unref'ed maintenance scheduler, deterministic `waitForMaintenance()`, graceful close behavior, background failure containment, and read-only maintenance/level statistics.
+- Added deterministic failure hooks and policy, concurrency, recovery, query-equivalence, legacy-level, and cleanup tests around both sides of the manifest commit boundary.
+- Added `examples/automatic-compaction.ts`, `bench:automatic-compaction`, release documentation, and preserved exact scalar and scope-aware `elemMatch` verification.
+
 ## 1.4.0 - Scope-Aware Array `elemMatch` Semantics
 
 - Added canonical `{ path: "array[]", elemMatch: expression }` queries with relative child paths and exact same-array-element AND/OR semantics.

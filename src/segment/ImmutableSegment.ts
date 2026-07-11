@@ -77,6 +77,7 @@ export class ImmutableSegment {
   readonly #scopedPostingIndex: ScopedPostingIndexFileInput | undefined;
   readonly #allDocumentIds: PostingList;
   readonly #postingStats: ImmutableSegmentPostingStats;
+  readonly #estimatedByteSize: number;
   #documents: DocumentBlockReader | undefined;
 
   private constructor(root: string, files: ValidatedSegmentFileSet, postingCacheMaxEntries: number) {
@@ -89,6 +90,7 @@ export class ImmutableSegment {
     this.#scopedPostingIndex = files.scopedPostingIndex;
     this.#allDocumentIds = createPostingList(files.offsetTable.offsets.map(({ docId }) => toDocId(docId)));
     this.#postingStats = derivePostingStats(files.postingIndex, files.scopedPostingIndex);
+    this.#estimatedByteSize = files.totalByteSize;
     for (const docId of files.deleteBitmap.deleted) {
       this.#deleted.add(docId);
     }
@@ -116,6 +118,11 @@ export class ImmutableSegment {
     return this.#metadata;
   }
 
+  /** Manifest-relative immutable segment directory path. */
+  public get path(): string {
+    return `segments/seg-${String(this.#metadata.segmentId).padStart(6, "0")}`;
+  }
+
   /**
    * Number of physical document versions written to this segment.
    */
@@ -135,6 +142,11 @@ export class ImmutableSegment {
    */
   public get exactDocumentIdCount(): number {
     return this.#allDocumentIds.size;
+  }
+
+  /** Total bytes across the validated required segment files. */
+  public get estimatedByteSize(): number {
+    return this.#estimatedByteSize;
   }
 
   /**

@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { SegmentId } from "../types/json.js";
 import { toDocId, toSegmentId, type DocId } from "../types/json.js";
@@ -48,6 +48,7 @@ export interface DatabaseManifest {
 export class ManifestStore {
   readonly #root: string;
   readonly #currentPath: string;
+  #activeGeneration = 0;
 
   /**
    * Creates a manifest store.
@@ -84,12 +85,33 @@ export class ManifestStore {
    * @throws {SabliCorruptionError} If CURRENT or the manifest is malformed.
    */
   public async read(): Promise<DatabaseManifest> {
-    const current = (await readFile(this.#currentPath, "utf8")).trim();
-    if (current.length === 0) {
+    let current: string;
+    try {
+      current = (await readFile(this.#currentPath, "utf8")).trim();
+    } catch (error) {
+      throw new SabliCorruptionError("Invalid CURRENT file: the active manifest pointer is missing or unreadable.", { cause: error });
+    }
+    const generation = parseManifestGeneration(current);
+    if (generation === undefined) {
       throw new SabliCorruptionError("Invalid CURRENT file: expected a manifest file name.");
     }
-    const raw = await readFile(join(this.#root, current), "utf8");
-    return parseDatabaseManifest(JSON.parse(raw));
+    let raw: string;
+    try {
+      raw = await readFile(join(this.#root, current), "utf8");
+    } catch (error) {
+      throw new SabliCorruptionError(`Invalid CURRENT file: active manifest ${current} is missing or unreadable.`, { cause: error });
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      const manifest = parseDatabaseManifest(parsed);
+      this.#activeGeneration = generation;
+      return manifest;
+    } catch (error) {
+      if (error instanceof SabliCorruptionError) {
+        throw error;
+      }
+      throw new SabliCorruptionError(`Invalid active manifest ${current}: expected valid JSON.`, { cause: error });
+    }
   }
 
   /**
@@ -97,10 +119,31 @@ export class ManifestStore {
    *
    * @param manifest - Manifest to persist.
    */
-  public async write(manifest: DatabaseManifest): Promise<void> {
-    const name = "MANIFEST-000001";
-    await writeFileAtomic(join(this.#root, name), `${JSON.stringify(this.withChecksum(manifest), null, 2)}\n`);
+  public async write(
+    manifest: DatabaseManifest,
+    hooks: { readonly afterGenerationWrite?: () => Promise<void> } = {}
+  ): Promise<DatabaseManifest> {
+    const persisted = this.withChecksum(manifest);
+    const generation = await this.nextAvailableGeneration();
+    const name = formatManifestName(generation);
+    await writeFileAtomic(join(this.#root, name), `${JSON.stringify(persisted, null, 2)}\n`);
+    await hooks.afterGenerationWrite?.();
     await writeFileAtomic(this.#currentPath, `${name}\n`);
+    this.#activeGeneration = generation;
+    return persisted;
+  }
+
+  /** Active manifest filename generation, or zero before the first read/write. */
+  public get activeGeneration(): number {
+    return this.#activeGeneration;
+  }
+
+  private async nextAvailableGeneration(): Promise<number> {
+    let generation = this.#activeGeneration + 1;
+    while (await fileExists(join(this.#root, formatManifestName(generation)))) {
+      generation += 1;
+    }
+    return generation;
   }
 
   private withChecksum(input: Omit<DatabaseManifest, "checksum"> | DatabaseManifest): DatabaseManifest {
@@ -114,6 +157,28 @@ export class ManifestStore {
       activeWalGeneration: input.activeWalGeneration
     };
     return { ...payload, checksum: checksum(stableJson(payload)) };
+  }
+}
+
+function formatManifestName(generation: number): string {
+  return `MANIFEST-${String(generation).padStart(6, "0")}`;
+}
+
+function parseManifestGeneration(name: string): number | undefined {
+  const match = /^MANIFEST-(\d{6,})$/.exec(name);
+  if (match === null) {
+    return undefined;
+  }
+  const generation = Number(match[1]);
+  return Number.isSafeInteger(generation) && generation >= 1 ? generation : undefined;
+}
+
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
   }
 }
 

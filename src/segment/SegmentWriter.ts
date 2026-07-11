@@ -15,6 +15,7 @@ import {
   encodeScopedTermBloomTerm
 } from "./ScopedPostingIndex.js";
 import type { SegmentMetadata } from "./SegmentMetadata.js";
+import { MAX_SEGMENT_LEVEL } from "../maintenance/CompactionPolicy.js";
 
 interface PostingIndexFile {
   readonly format: "sabli-postings";
@@ -68,7 +69,15 @@ export class SegmentWriter {
    * @param snapshot - Memory segment snapshot.
    * @returns Manifest segment entry for the new segment.
    */
-  public async write(segmentId: SegmentId, snapshot: MemSegmentSnapshot): Promise<ManifestSegmentEntry> {
+  public async write(
+    segmentId: SegmentId,
+    snapshot: MemSegmentSnapshot,
+    options: { readonly level?: number } = {}
+  ): Promise<ManifestSegmentEntry> {
+    const level = options.level ?? 0;
+    if (!Number.isInteger(level) || level < 0 || level > MAX_SEGMENT_LEVEL) {
+      throw new SabliStorageError(`Cannot write immutable segment: level must be an integer from 0 to ${String(MAX_SEGMENT_LEVEL)}.`);
+    }
     const segmentName = `seg-${String(segmentId).padStart(6, "0")}`;
     const finalPath = join(this.#segmentsRoot, segmentName);
     const tempPath = `${finalPath}.tmp`;
@@ -133,7 +142,8 @@ export class SegmentWriter {
       await writeFile(join(tempPath, "delete.bitmap"), JSON.stringify({ format: "sabli-delete-bitmap", version: 1, deleted: [] }));
       const metadataPayload = {
         format: "sabli-segment" as const,
-        version: 2 as const,
+        version: 3 as const,
+        level,
         segmentId,
         docCount: snapshot.documents.length,
         minDocId,

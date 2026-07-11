@@ -38,7 +38,8 @@ async function activeWalPath(path: string): Promise<string> {
 }
 
 async function activeManifest(path: string) {
-  return parseDatabaseManifest(JSON.parse(await readFile(join(path, "MANIFEST-000001"), "utf8")));
+  const manifestName = (await readFile(join(path, "CURRENT"), "utf8")).trim();
+  return parseDatabaseManifest(JSON.parse(await readFile(join(path, manifestName), "utf8")));
 }
 
 async function segmentNames(path: string): Promise<readonly string[]> {
@@ -109,7 +110,8 @@ describe("SabliDatabase persistence", () => {
   it("rejects an invalid manifest", async () => {
     const path = await tempDbPath();
     await (await SabliDatabase.open({ path, createIfMissing: true })).close();
-    await writeFile(join(path, "MANIFEST-000001"), JSON.stringify({ format: "bad" }));
+    const manifestName = (await readFile(join(path, "CURRENT"), "utf8")).trim();
+    await writeFile(join(path, manifestName), JSON.stringify({ format: "bad" }));
     await expect(SabliDatabase.open({ path, createIfMissing: false })).rejects.toThrow(SabliCorruptionError);
   });
 
@@ -752,7 +754,7 @@ describe("SabliDatabase persistence", () => {
     const db = await SabliDatabase.open({ path, createIfMissing: true });
     await db.insert({ user: { name: "current" } });
     await db.compact();
-    expect((await readFile(join(path, "CURRENT"), "utf8")).trim()).toBe("MANIFEST-000001");
+    expect((await readFile(join(path, "CURRENT"), "utf8")).trim()).toMatch(/^MANIFEST-\d{6,}$/);
     const manifest = await activeManifest(path);
     expect(manifest.segments).toHaveLength(1);
     expect(manifest.segments[0]?.path).toMatch(/^segments\/seg-\d{6}$/);
@@ -763,9 +765,9 @@ describe("SabliDatabase persistence", () => {
   it("cleans safe temporary segment directories on startup", async () => {
     const path = await tempDbPath();
     await (await SabliDatabase.open({ path, createIfMissing: true })).close();
-    await mkdir(join(path, "segments", "seg-leftover.tmp"), { recursive: true });
+    await mkdir(join(path, "segments", "seg-999999.tmp"), { recursive: true });
     const reopened = await SabliDatabase.open({ path, createIfMissing: false });
-    expect(await readdir(join(path, "segments"))).not.toContain("seg-leftover.tmp");
+    expect(await readdir(join(path, "segments"))).not.toContain("seg-999999.tmp");
     await reopened.close();
   });
 
@@ -775,6 +777,15 @@ describe("SabliDatabase persistence", () => {
     await mkdir(join(path, "segments", "unknown-data"), { recursive: true });
     const reopened = await SabliDatabase.open({ path, createIfMissing: false });
     expect(await readdir(join(path, "segments"))).toContain("unknown-data");
+    await reopened.close();
+  });
+
+  it("preserves unrecognized segment-like temporary directories", async () => {
+    const path = await tempDbPath();
+    await (await SabliDatabase.open({ path, createIfMissing: true })).close();
+    await mkdir(join(path, "segments", "seg-leftover.tmp"), { recursive: true });
+    const reopened = await SabliDatabase.open({ path, createIfMissing: false });
+    expect(await readdir(join(path, "segments"))).toContain("seg-leftover.tmp");
     await reopened.close();
   });
 });

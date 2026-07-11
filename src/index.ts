@@ -46,7 +46,10 @@ export { MemSegment } from "./segment/MemSegment.js";
 export { ImmutableSegment } from "./segment/ImmutableSegment.js";
 export type { SegmentManifest } from "./segment/metadata.js";
 export type { SegmentMetadata } from "./segment/SegmentMetadata.js";
-export type { SabliDatabaseOptions } from "./validation/DatabaseOptionsValidation.js";
+export type {
+  AutomaticCompactionOptions,
+  SabliDatabaseOptions
+} from "./validation/DatabaseOptionsValidation.js";
 export type {
   DocId,
   JsonArray,

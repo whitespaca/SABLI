@@ -5,10 +5,10 @@ import { checksum, stableJson } from "../storage/Checksum.js";
 import { t, compile } from "typesea";
 import { SerializedBloomFilterGuard } from "./schemas.js";
 import { assertValid } from "./assertValid.js";
+import { MAX_SEGMENT_LEVEL } from "../maintenance/CompactionPolicy.js";
 
-export const SegmentMetadataGuard = compile(t.strictObject({
+const commonSegmentMetadataFields = {
   format: t.literal("sabli-segment"),
-  version: t.union(t.literal(1), t.literal(2)),
   segmentId: t.number.int().gte(0),
   docCount: t.number.int().gte(0),
   minDocId: t.number.int().gte(0),
@@ -16,7 +16,17 @@ export const SegmentMetadataGuard = compile(t.strictObject({
   createdAt: t.string,
   bloom: SerializedBloomFilterGuard,
   checksum: t.string
-}), { name: "isSegmentMetadata" });
+};
+
+export const SegmentMetadataGuard = compile(t.union(
+  t.strictObject({ ...commonSegmentMetadataFields, version: t.literal(1) }),
+  t.strictObject({ ...commonSegmentMetadataFields, version: t.literal(2) }),
+  t.strictObject({
+    ...commonSegmentMetadataFields,
+    version: t.literal(3),
+    level: t.number.int().gte(0).lte(MAX_SEGMENT_LEVEL)
+  })
+), { name: "isSegmentMetadata" });
 
 /**
  * Validates immutable segment metadata loaded from disk.
@@ -33,7 +43,7 @@ export function parseSegmentMetadata(input: unknown): SegmentMetadata {
   if (Number.isNaN(Date.parse(record.createdAt))) {
     throw new SabliCorruptionError("Invalid segment metadata: createdAt must be an ISO timestamp.");
   }
-  const payload = {
+  const commonPayload = {
     format: record.format,
     version: record.version,
     segmentId: record.segmentId,
@@ -43,12 +53,16 @@ export function parseSegmentMetadata(input: unknown): SegmentMetadata {
     createdAt: record.createdAt,
     bloom: record.bloom
   };
+  const payload = record.version === 3
+    ? { ...commonPayload, level: record.level }
+    : commonPayload;
   if (checksum(stableJson(payload)) !== record.checksum) {
     throw new SabliCorruptionError("Invalid segment metadata: checksum mismatch.");
   }
   return {
     format: "sabli-segment",
     version: record.version,
+    level: record.version === 3 ? record.level : 0,
     segmentId: toSegmentId(record.segmentId),
     docCount: record.docCount,
     minDocId: record.minDocId,
